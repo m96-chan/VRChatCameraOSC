@@ -270,11 +270,22 @@ namespace VRChatCameraOsc.AvatarSetup
             return clip;
         }
 
+        // Additive layers subtract each clip's own value at time 0 as its
+        // implicit reference pose before adding the rest on top. A flat
+        // AnimationCurve.Constant clip has the same value at time 0 as
+        // everywhere else, so that delta — and the entire additive layer's
+        // contribution — is always zero, regardless of AvatarMask. Ramping
+        // from 0 at t=0 up to the target value makes the reference pose 0
+        // (matching the other two children of the blend tree, which also
+        // start at 0) so the additive delta correctly reflects the blended
+        // muscle value once the ramp finishes, one frame later.
+        const float AdditiveReferenceRampSeconds = 1f / 60f;
+
         static AnimationClip MuscleClip(AnimatorController controller, string paramName, string muscleName, float value)
         {
             var clip = new AnimationClip { name = $"OSC_{paramName}_{value:0.##}" };
             var binding = EditorCurveBinding.FloatCurve(string.Empty, typeof(Animator), muscleName);
-            AnimationUtility.SetEditorCurve(clip, binding, AnimationCurve.Constant(0f, 0f, value));
+            AnimationUtility.SetEditorCurve(clip, binding, AnimationCurve.Linear(0f, 0f, AdditiveReferenceRampSeconds, value));
             AssetDatabase.AddObjectToAsset(clip, controller);
             return clip;
         }
