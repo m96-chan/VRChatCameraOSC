@@ -3,15 +3,19 @@ using System.Linq;
 using UnityEditor;
 using UnityEditor.Animations;
 using UnityEngine;
+using VRC.SDK3.Avatars.Components;
+using VRC.SDKBase;
 
 namespace VRChatCameraOsc.AvatarSetup
 {
     /// <summary>
-    /// Builds FX Animator Controller layers that drive an existing blend shape
+    /// Builds Animator Controller layers that drive an existing blend shape
     /// or the Humanoid head bone from one of the 10 OSC float parameters
-    /// (issue #16). Each parameter gets its own layer, named
-    /// <c>OSC_&lt;ParamName&gt;</c>, so re-running the wizard replaces rather
-    /// than duplicates.
+    /// (issue #16). Blend-shape layers go in the FX controller;
+    /// <see cref="AddHeadPoseLayer"/> goes in the Gesture controller instead
+    /// (see its doc comment for why). Each parameter gets its own layer,
+    /// named <c>OSC_&lt;ParamName&gt;</c>, so re-running the wizard replaces
+    /// rather than duplicates.
     ///
     /// Deliberately Animator-only: VRChat strips arbitrary MonoBehaviours from
     /// uploaded avatars, so nothing here can be a runtime script — see the
@@ -80,6 +84,21 @@ namespace VRChatCameraOsc.AvatarSetup
         /// so it composes with whatever else animates the avatar instead of
         /// overriding it. <paramref name="muscleName"/> must be one of
         /// <see cref="HumanTrait.MuscleName"/> (e.g. "Head Nod Down-Up").
+        ///
+        /// <paramref name="controller"/> must be the avatar's **Gesture**
+        /// playable-layer controller, not FX. Two documented VRChat facts
+        /// force this (creators.vrchat.com/avatars/playable-layers/,
+        /// /avatars/state-behaviors/): (1) at avatar init the FX layer's
+        /// default mask "disables all humanoid muscles", so a muscle-curve
+        /// layer placed in FX is silently inert in the VRChat client even
+        /// though it rotates the head in the Unity editor; (2) the Head bone
+        /// is IK-driven on Desktop and only an Animator layer whose state
+        /// carries a <see cref="VRCAnimatorTrackingControl"/> with
+        /// <c>trackingHead = Animation</c> makes the Animator's own values
+        /// win over that IK — which is why this method also attaches one.
+        /// The Gesture layer is VRChat's documented home for "animations
+        /// that need to act on individual body parts while still playing the
+        /// underlying animations for the rest of the body".
         /// </summary>
         public static void AddHeadPoseLayer(AnimatorController controller, string paramName, string muscleName)
         {
@@ -87,7 +106,33 @@ namespace VRChatCameraOsc.AvatarSetup
             tree.AddChild(MuscleClip(controller, paramName, muscleName, -1f), -1f);
             tree.AddChild(MuscleClip(controller, paramName, muscleName, 0f), 0f);
             tree.AddChild(MuscleClip(controller, paramName, muscleName, 1f), 1f);
-            AddLayer(controller, paramName, tree, AnimatorLayerBlendingMode.Additive, GetOrCreateHeadOnlyMask(controller));
+            AddLayer(controller, paramName, tree, AnimatorLayerBlendingMode.Additive, GetOrCreateHeadOnlyMask(controller), AddHeadTrackingControlBehaviour);
+        }
+
+        /// <summary>
+        /// Forces Head = Animation (so this layer's muscle curves win over
+        /// Desktop head IK) and leaves every other tracked body part at
+        /// NoChange, so this layer never overrides hands/eyes/mouth/etc. it
+        /// knows nothing about. Field/enum names confirmed against the VRC
+        /// SDK's compiled <c>VRCSDKBase.dll</c> /
+        /// <c>VRCAnimatorTrackingControlEditor.cs</c> — the type is
+        /// <c>VRC.SDK3.Avatars.Components.VRCAnimatorTrackingControl</c>,
+        /// deriving its <c>TrackingType</c> enum (NoChange/Tracking/Animation)
+        /// from <see cref="VRC_AnimatorTrackingControl"/>.
+        /// </summary>
+        static void AddHeadTrackingControlBehaviour(AnimatorState state)
+        {
+            var behaviour = state.AddStateMachineBehaviour<VRCAnimatorTrackingControl>();
+            behaviour.trackingHead = VRC_AnimatorTrackingControl.TrackingType.Animation;
+            behaviour.trackingLeftHand = VRC_AnimatorTrackingControl.TrackingType.NoChange;
+            behaviour.trackingRightHand = VRC_AnimatorTrackingControl.TrackingType.NoChange;
+            behaviour.trackingHip = VRC_AnimatorTrackingControl.TrackingType.NoChange;
+            behaviour.trackingLeftFoot = VRC_AnimatorTrackingControl.TrackingType.NoChange;
+            behaviour.trackingRightFoot = VRC_AnimatorTrackingControl.TrackingType.NoChange;
+            behaviour.trackingLeftFingers = VRC_AnimatorTrackingControl.TrackingType.NoChange;
+            behaviour.trackingRightFingers = VRC_AnimatorTrackingControl.TrackingType.NoChange;
+            behaviour.trackingEyes = VRC_AnimatorTrackingControl.TrackingType.NoChange;
+            behaviour.trackingMouth = VRC_AnimatorTrackingControl.TrackingType.NoChange;
         }
 
         /// <summary>
@@ -156,6 +201,22 @@ namespace VRChatCameraOsc.AvatarSetup
                 foreach (var childState in layer.stateMachine.states)
                 {
                     DestroyMotion(childState.state.motion, visited);
+
+                    // StateMachineBehaviours (e.g. the head-pose layer's
+                    // VRCAnimatorTrackingControl) are separate sub-assets of
+                    // the controller, same as BlendTrees/AnimationClips —
+                    // destroying the state/stateMachine does not take them
+                    // with it, so without this an orphaned behaviour asset
+                    // would linger in the controller file after removal.
+                    foreach (var behaviour in childState.state.behaviours)
+                    {
+                        if (behaviour == null)
+                        {
+                            continue;
+                        }
+                        AssetDatabase.RemoveObjectFromAsset(behaviour);
+                        Object.DestroyImmediate(behaviour, true);
+                    }
                 }
                 AssetDatabase.RemoveObjectFromAsset(layer.stateMachine);
                 Object.DestroyImmediate(layer.stateMachine, true);
@@ -227,7 +288,8 @@ namespace VRChatCameraOsc.AvatarSetup
             string paramName,
             BlendTree tree,
             AnimatorLayerBlendingMode blendingMode,
-            AvatarMask mask)
+            AvatarMask mask,
+            System.Action<AnimatorState> configureState = null)
         {
             var layerName = $"OSC_{paramName}";
             var layers = controller.layers.ToList();
@@ -243,6 +305,7 @@ namespace VRChatCameraOsc.AvatarSetup
             state.motion = tree;
             state.writeDefaultValues = false;
             stateMachine.defaultState = state;
+            configureState?.Invoke(state);
 
             layers.Add(new AnimatorControllerLayer
             {

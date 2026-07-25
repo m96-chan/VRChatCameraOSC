@@ -7,6 +7,13 @@ using UnityEngine;
 using VRC.SDK3.Avatars.Components;
 using VRC.SDK3.Avatars.ScriptableObjects;
 
+// EnsureGestureController/TryGetGestureController/FindDefaultHandsControllerAssetPath
+// are `internal` (rather than the `static`-in-a-window-class-implies-private
+// default) specifically so the EditMode test assembly can exercise the
+// Gesture-controller copy-default-hands-layer logic directly — see
+// Tests/Editor/AvatarSetupWindowGestureControllerTests.cs.
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("VRChatCameraOsc.AvatarSetup.Editor.Tests")]
+
 namespace VRChatCameraOsc.AvatarSetup
 {
     /// <summary>
@@ -124,7 +131,7 @@ namespace VRChatCameraOsc.AvatarSetup
             EditorGUILayout.LabelField(
                 "Status",
                 (wired ? "ON — parameters declared" : "OFF — not applied yet") +
-                $"  |  {activeLayers}/{OscParameterSpec.All.Count} actually wired (have an FX layer)");
+                $"  |  {activeLayers}/{OscParameterSpec.All.Count} actually wired (have an Animator layer)");
             if (wired && activeLayers < OscParameterSpec.All.Count)
             {
                 EditorGUILayout.HelpBox(
@@ -148,15 +155,17 @@ namespace VRChatCameraOsc.AvatarSetup
         }
 
         /// <summary>How many of the 10 parameters currently have an <c>OSC_*</c>
-        /// FX layer actually driving them (vs. just being declared).</summary>
+        /// layer actually driving them (vs. just being declared). Head-pose
+        /// parameters live on the Gesture controller (issue #16 head-pose
+        /// fix) but are also checked against FX so avatars set up by an
+        /// older version of this wizard still show as wired.</summary>
         static int CountActiveLayers(VRCAvatarDescriptor avatar)
         {
-            var controller = TryGetFxController(avatar);
-            if (controller == null)
-            {
-                return 0;
-            }
-            return OscParameterSpec.All.Count(s => OscAnimatorLayerBuilder.HasLayer(controller, s.Name));
+            var fx = TryGetFxController(avatar);
+            var gesture = TryGetGestureController(avatar);
+            return OscParameterSpec.All.Count(s =>
+                (fx != null && OscAnimatorLayerBuilder.HasLayer(fx, s.Name)) ||
+                (gesture != null && OscAnimatorLayerBuilder.HasLayer(gesture, s.Name)));
         }
 
         /// <summary>
@@ -277,6 +286,8 @@ namespace VRChatCameraOsc.AvatarSetup
             var added = VrcExpressionParametersMerger.Merge(expressionParameters, OscParameterSpec.All);
 
             var controller = EnsureFxController(_avatar);
+            AnimatorController gestureController = null;
+            var gestureControllerCopiedDefaultHands = true;
             foreach (var spec in OscParameterSpec.All)
             {
                 switch (spec.Kind)
@@ -302,7 +313,23 @@ namespace VRChatCameraOsc.AvatarSetup
                     case OscParamKind.HeadPose:
                         if (_includeHeadPose)
                         {
-                            OscAnimatorLayerBuilder.AddHeadPoseLayer(controller, spec.Name, HeadPoseMuscles[spec.Name]);
+                            if (gestureController == null)
+                            {
+                                gestureController = EnsureGestureController(_avatar, out gestureControllerCopiedDefaultHands);
+
+                                // Migrate away from the old FX-based placement: an
+                                // OSC_Head* layer left in FX by an older version of
+                                // this wizard never did anything in the VRChat
+                                // client (FX's default mask strips humanoid muscle
+                                // animation — see AddHeadPoseLayer's doc comment),
+                                // so remove it now that head pose lives on Gesture
+                                // instead, rather than leaving dead duplicate layers.
+                                foreach (var headSpec in OscParameterSpec.All.Where(s => s.Kind == OscParamKind.HeadPose))
+                                {
+                                    OscAnimatorLayerBuilder.RemoveLayer(controller, headSpec.Name);
+                                }
+                            }
+                            OscAnimatorLayerBuilder.AddHeadPoseLayer(gestureController, spec.Name, HeadPoseMuscles[spec.Name]);
                         }
                         break;
                 }
@@ -320,11 +347,23 @@ namespace VRChatCameraOsc.AvatarSetup
             }
 
             EditorUtility.SetDirty(controller);
+            if (gestureController != null)
+            {
+                EditorUtility.SetDirty(gestureController);
+            }
             AssetDatabase.SaveAssets();
             EditorUtility.DisplayDialog(
                 "VRChatCameraOSC Setup",
                 $"Done. Added {added} new expression parameter(s). FX layers wired for the selected blend shapes" +
-                (_includeHeadPose ? " and head pose." : ".") +
+                (_includeHeadPose ? " and head pose wired on the Gesture layer (Head = Animation via a" +
+                                     " VRCAnimatorTrackingControl)." : ".") +
+                (_includeHeadPose && !gestureControllerCopiedDefaultHands
+                    ? "\n\nCouldn't find the VRC SDK's default hand-gesture controller " +
+                      $"(\"{DefaultHandsControllerAssetName}\", normally imported via the SDK's " +
+                      "\"AV3 Demo Assets\" sample) to copy as a starting point, so a blank Gesture " +
+                      "controller was created instead — any default VRChat hand gestures (fist, point, " +
+                      "etc.) will need to be set up manually if you want them."
+                    : "") +
                 (disabledEyelids
                     ? "\n\nAlso disabled VRChat's native Eyelids (was fighting with OSC-driven blinking) — " +
                       "re-enable it yourself in the avatar's Eye Look settings if you ever remove OSC blink wiring."
@@ -335,9 +374,17 @@ namespace VRChatCameraOsc.AvatarSetup
         /// <summary>
         /// The "OFF" side of the toggle: removes every VRChatCameraOSC
         /// parameter and <c>OSC_*</c> layer this wizard could have added.
-        /// Leaves the Expression Parameters asset and FX Animator Controller
-        /// themselves in place (only their VRChatCameraOSC-owned contents are
-        /// removed) since they may hold unrelated setup.
+        /// Leaves the Expression Parameters asset and the FX/Gesture Animator
+        /// Controllers themselves in place (only their VRChatCameraOSC-owned
+        /// contents are removed) since they may hold unrelated setup — the
+        /// Gesture controller in particular may be carrying the avatar's real
+        /// hand-gesture animations.
+        ///
+        /// Head-pose layers are stripped from <em>both</em> controllers:
+        /// their current home (Gesture, issue #16 head-pose fix) and their
+        /// old one (FX, from an older version of this wizard) — an avatar set
+        /// up before the fix only has the FX copy, and this toggle must still
+        /// show/act correctly for it.
         /// </summary>
         void RunRemove()
         {
@@ -349,6 +396,18 @@ namespace VRChatCameraOsc.AvatarSetup
 
             var removedLayers = 0;
             var controller = TryGetFxController(_avatar);
+            var gestureController = TryGetGestureController(_avatar);
+            if (gestureController != null)
+            {
+                foreach (var headSpec in OscParameterSpec.All.Where(s => s.Kind == OscParamKind.HeadPose))
+                {
+                    if (OscAnimatorLayerBuilder.RemoveLayer(gestureController, headSpec.Name))
+                    {
+                        removedLayers++;
+                    }
+                }
+                EditorUtility.SetDirty(gestureController);
+            }
             if (controller != null)
             {
                 foreach (var spec in OscParameterSpec.All)
@@ -364,7 +423,7 @@ namespace VRChatCameraOsc.AvatarSetup
             AssetDatabase.SaveAssets();
             EditorUtility.DisplayDialog(
                 "VRChatCameraOSC Setup",
-                $"Removed {removedParams} expression parameter(s) and {removedLayers} FX layer(s).",
+                $"Removed {removedParams} expression parameter(s) and {removedLayers} Animator layer(s).",
                 "OK");
         }
 
@@ -414,6 +473,106 @@ namespace VRChatCameraOsc.AvatarSetup
             avatar.baseAnimationLayers = layers;
             EditorUtility.SetDirty(avatar);
             return controller;
+        }
+
+        /// <summary>Asset name of the VRC SDK's stock default-hand-gestures
+        /// controller (from the SDK's "AV3 Demo Assets" sample), used as the
+        /// starting point for a new Gesture controller so existing default
+        /// hand gestures (fist, point, etc.) aren't lost when this wizard has
+        /// to create one — see <see cref="EnsureGestureController"/>.</summary>
+        internal const string DefaultHandsControllerAssetName = "vrc_AvatarV3HandsLayer";
+
+        /// <summary>Read-only: the avatar's Gesture controller if it already
+        /// has a custom (non-default) one assigned, else null.</summary>
+        internal static AnimatorController TryGetGestureController(VRCAvatarDescriptor avatar)
+        {
+            var layers = avatar.baseAnimationLayers;
+            var gestureIndex = System.Array.FindIndex(layers, l => l.type == VRCAvatarDescriptor.AnimLayerType.Gesture);
+            if (gestureIndex < 0)
+            {
+                return null;
+            }
+            var layer = layers[gestureIndex];
+            return !layer.isDefault ? layer.animatorController as AnimatorController : null;
+        }
+
+        /// <summary>
+        /// Head-pose layers (issue #16 head-pose fix) go on the Gesture
+        /// playable layer, not FX — see <see cref="OscAnimatorLayerBuilder.AddHeadPoseLayer"/>
+        /// for why. If the avatar still has VRChat's default Gesture layer
+        /// (<c>isDefault == true</c>, no controller of its own), this creates
+        /// a real one by copying the VRC SDK's stock hand-gestures controller
+        /// (<see cref="DefaultHandsControllerAssetName"/>) so the avatar's
+        /// existing default hand gestures survive the switch away from
+        /// "default". <paramref name="copiedDefaultHandsController"/> is
+        /// false if that stock asset couldn't be found (e.g. the SDK's "AV3
+        /// Demo Assets" sample was never imported into this project) — in
+        /// that case a blank controller is created instead and the caller
+        /// should warn the user that default hand gestures need manual setup.
+        /// </summary>
+        internal static AnimatorController EnsureGestureController(VRCAvatarDescriptor avatar, out bool copiedDefaultHandsController)
+        {
+            var existing = TryGetGestureController(avatar);
+            if (existing != null)
+            {
+                copiedDefaultHandsController = true;
+                return existing;
+            }
+
+            var layers = avatar.baseAnimationLayers;
+            var gestureIndex = System.Array.FindIndex(layers, l => l.type == VRCAvatarDescriptor.AnimLayerType.Gesture);
+            var path = AssetPathNextToAvatar(avatar, "Gesture.controller");
+
+            AnimatorController controller;
+            var defaultHandsPath = FindDefaultHandsControllerAssetPath();
+            if (defaultHandsPath != null)
+            {
+                AssetDatabase.CopyAsset(defaultHandsPath, path);
+                controller = AssetDatabase.LoadAssetAtPath<AnimatorController>(path);
+                copiedDefaultHandsController = true;
+            }
+            else
+            {
+                controller = AnimatorController.CreateAnimatorControllerAtPath(path);
+                copiedDefaultHandsController = false;
+            }
+
+            Undo.RecordObject(avatar, "Assign VRChatCameraOSC Gesture Controller");
+            if (gestureIndex >= 0)
+            {
+                layers[gestureIndex].animatorController = controller;
+                layers[gestureIndex].isDefault = false;
+                layers[gestureIndex].isEnabled = true;
+                // Mirrors what the VRC SDK's own inspector does when you
+                // manually assign a controller to a non-default layer slot
+                // (AvatarDescriptorEditor3AnimLayerInit.SetLayerMaskFromController):
+                // the layer's mask follows its first sub-layer's AvatarMask,
+                // so a copied vrc_AvatarV3HandsLayer keeps animating hands
+                // only, not the whole body.
+                layers[gestureIndex].mask = controller.layers.Length > 0 ? controller.layers[0].avatarMask : null;
+            }
+            avatar.baseAnimationLayers = layers;
+            EditorUtility.SetDirty(avatar);
+            return controller;
+        }
+
+        /// <summary>
+        /// Finds the VRC SDK's stock default-hand-gestures controller by
+        /// asset name, wherever it happens to live in the project (normally
+        /// under the SDK package's Samples — an *optional* Package Manager
+        /// sample import, so it may not be present in every project).
+        /// </summary>
+        internal static string FindDefaultHandsControllerAssetPath()
+        {
+            foreach (var guid in AssetDatabase.FindAssets($"{DefaultHandsControllerAssetName} t:AnimatorController"))
+            {
+                var candidatePath = AssetDatabase.GUIDToAssetPath(guid);
+                if (Path.GetFileNameWithoutExtension(candidatePath) == DefaultHandsControllerAssetName)
+                {
+                    return candidatePath;
+                }
+            }
+            return null;
         }
 
         static string AssetPathNextToAvatar(VRCAvatarDescriptor avatar, string fileName)

@@ -3,6 +3,8 @@ using NUnit.Framework;
 using UnityEditor;
 using UnityEditor.Animations;
 using UnityEngine;
+using VRC.SDK3.Avatars.Components;
+using VRC.SDKBase;
 
 namespace VRChatCameraOsc.AvatarSetup.Tests
 {
@@ -128,6 +130,59 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             Assert.AreEqual(3, masks.Length);
             Assert.AreSame(masks[0], masks[1]);
             Assert.AreSame(masks[1], masks[2]);
+        }
+
+        [Test]
+        public void AddHeadPoseLayer_AttachesExactlyOneTrackingControl_HeadAnimationOthersNoChange()
+        {
+            // VRChat fact (creators.vrchat.com/avatars/state-behaviors/): the
+            // Head bone is IK-driven on Desktop; only a
+            // VRCAnimatorTrackingControl with trackingHead = Animation makes
+            // this layer's muscle curves win. Every other tracked part must
+            // stay NoChange so this layer never stomps on hands/eyes/etc.
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadRoll", "Head Tilt Left-Right");
+
+            var layer = _controller.layers.First(l => l.name == "OSC_HeadRoll");
+            var state = layer.stateMachine.states.Single().state;
+            var behaviours = state.behaviours.OfType<VRCAnimatorTrackingControl>().ToArray();
+
+            Assert.AreEqual(1, behaviours.Length, "exactly one VRCAnimatorTrackingControl must be attached");
+            var behaviour = behaviours[0];
+            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.Animation, behaviour.trackingHead);
+            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, behaviour.trackingLeftHand);
+            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, behaviour.trackingRightHand);
+            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, behaviour.trackingHip);
+            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, behaviour.trackingLeftFoot);
+            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, behaviour.trackingRightFoot);
+            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, behaviour.trackingLeftFingers);
+            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, behaviour.trackingRightFingers);
+            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, behaviour.trackingEyes);
+            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, behaviour.trackingMouth);
+        }
+
+        [Test]
+        public void AddBlendShapeLayer_DoesNotAttachTrackingControl()
+        {
+            // Only head-pose layers need VRCAnimatorTrackingControl; blend
+            // shape layers must be left alone.
+            OscAnimatorLayerBuilder.AddBlendShapeLayer(_controller, _avatarRoot.transform, "MouthOpen", _renderer, "Smile");
+
+            var layer = _controller.layers.First(l => l.name == "OSC_MouthOpen");
+            var state = layer.stateMachine.states.Single().state;
+            Assert.IsEmpty(state.behaviours);
+        }
+
+        [Test]
+        public void RemoveLayer_HeadPoseLayer_LeavesNoOrphanedTrackingControlAsset()
+        {
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadRoll", "Head Tilt Left-Right");
+
+            OscAnimatorLayerBuilder.RemoveLayer(_controller, "HeadRoll");
+
+            var orphaned = AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(_controller))
+                .OfType<VRCAnimatorTrackingControl>()
+                .Any();
+            Assert.IsFalse(orphaned, "removing a head-pose layer must not leave a StateMachineBehaviour sub-asset behind");
         }
 
         [Test]
