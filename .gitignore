@@ -1,0 +1,12 @@
+/target
+**/*.rs.bk
+Cargo.lock.orig
+
+# Python reference harness
+reference/.venv/
+__pycache__/
+*.pyc
+
+# Generated model weights / fixtures are downloaded, not committed (see reference/README.md)
+/models/*.safetensors
+/models/*.pth

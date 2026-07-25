@@ -1,0 +1,41 @@
+[package]
+name = "vrchat-camera-osc"
+version = "0.1.0"
+edition = "2021"
+description = "Realtime face tracking for VRChat from a webcam, delivered over OSC"
+license = "MIT OR Apache-2.0"
+default-run = "vrchat-camera-osc"
+
+[dependencies]
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+rosc = "0.11"
+image = "0.25"
+parking_lot = "0.12"
+
+# Inference (pure-Rust) — FAN face-alignment network ported to candle.
+candle-core = "0.11"
+candle-nn = "0.11"
+safetensors = "0.8"
+
+# TUI
+ratatui = "0.29"
+crossterm = "0.28"
+
+# Camera capture (macOS AVFoundation via nokhwa). Optional so the rest of the
+# crate still builds if the native backend is unavailable on a given target.
+nokhwa = { version = "0.10", features = ["input-avfoundation"], optional = true }
+
+[features]
+default = ["camera"]
+# Enables the real webcam backend. Without it, only the synthetic FakeCamera is
+# available (used by tests and CI, which have no camera).
+camera = ["dep:nokhwa"]
+
+[dev-dependencies]
+approx = "0.5"
+
+[profile.release]
+lto = "thin"
