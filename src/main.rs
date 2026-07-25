@@ -14,7 +14,7 @@
 //! emits no parameters (a clear warning is shown).
 
 use std::io::{self, Stdout};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -36,6 +36,22 @@ use vrchat_camera_osc::tracking::fan::FanTracker;
 use vrchat_camera_osc::tracking::FaceTracker;
 use vrchat_camera_osc::tui::{render, UiState};
 
+/// Default FAN weights path — also the only path auto-downloaded on first
+/// run (issue #12); a custom `--weights` path is left for the user to manage.
+fn default_weights_path() -> PathBuf {
+    PathBuf::from("models/2dfan4.safetensors")
+}
+
+/// Default S3FD detector path — see [`default_weights_path`].
+fn default_detector_path() -> PathBuf {
+    PathBuf::from("models/s3fd.safetensors")
+}
+
+const FAN_MODEL_URL: &str =
+    "https://github.com/m96-chan/VRChatCameraOSC/releases/download/models-v1/2dfan4.safetensors";
+const SFD_MODEL_URL: &str =
+    "https://github.com/m96-chan/VRChatCameraOSC/releases/download/models-v1/s3fd.safetensors";
+
 struct Args {
     monitor: bool,
     fake: bool,
@@ -49,8 +65,8 @@ fn parse_args() -> Args {
         monitor: false,
         fake: false,
         frames: None,
-        weights: PathBuf::from("models/2dfan4.safetensors"),
-        detector: PathBuf::from("models/s3fd.safetensors"),
+        weights: default_weights_path(),
+        detector: default_detector_path(),
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -118,7 +134,28 @@ fn build_sink(cfg: &Config) -> Result<Box<dyn OscSink>> {
     }
 }
 
+/// Download `path` from `url` on first run, but only when `path` is still the
+/// built-in default — a custom `--weights`/`--detector` path is the user's to
+/// manage. Never fails the caller: a download error just logs and leaves
+/// `path` missing, which the existing "tracking disabled" fallback handles.
+fn ensure_default_model_present(path: &Path, default: &Path, url: &str) {
+    if path != default || path.exists() {
+        return;
+    }
+    eprintln!("downloading {} (first run only) ...", path.display());
+    match vrchat_camera_osc::models::ensure_present(path, url) {
+        Ok(()) => eprintln!("downloaded {}", path.display()),
+        Err(e) => eprintln!(
+            "could not download {}: {e:#} — continuing without it",
+            path.display()
+        ),
+    }
+}
+
 fn build_tracker(weights: &PathBuf, detector_path: &PathBuf) -> Option<Box<dyn FaceTracker>> {
+    ensure_default_model_present(weights, &default_weights_path(), FAN_MODEL_URL);
+    ensure_default_model_present(detector_path, &default_detector_path(), SFD_MODEL_URL);
+
     if !weights.exists() {
         eprintln!(
             "no FAN weights at {} — tracking disabled (run reference/gen_fixtures.py). \

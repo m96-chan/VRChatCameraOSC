@@ -20,6 +20,10 @@ candle-core = "0.11"
 candle-nn = "0.11"
 safetensors = "0.8"
 
+# One-time model-weight download (issue #12): blocking GET + TLS + redirects,
+# no async runtime needed for a single startup download.
+ureq = { version = "2", features = ["tls"] }
+
 # TUI
 ratatui = "0.29"
 crossterm = "0.28"

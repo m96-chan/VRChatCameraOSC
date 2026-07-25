@@ -35,9 +35,9 @@ Realtime face tracking for VRChat, driven from your webcam and delivered over OS
 ## Status
 
 🚧 Early development. Interfaces and parameters are subject to change. The full
-pipeline (capture → face mesh → mapping → OSC) is wired end-to-end; a face
-**detector** (to auto-crop the face) is the main remaining tracking gap — today
-the tracker treats the whole frame as the face.
+pipeline (capture → detect → face mesh → mapping → OSC) is wired end-to-end,
+including face auto-crop (S3FD) before FAN. Model weights auto-download on
+first run. Hand/finger tracking is the main remaining gap (see Roadmap).
 
 ## Architecture
 
@@ -52,6 +52,7 @@ swappable:
 | Mapping | `mapping::Mapper` | iBUG-68 landmarks → normalised avatar params (mouth/blink/brows/head pose), clamped + smoothed |
 | OSC | `osc::OscSink` | `UdpOscSender` to VRChat, or `MonitorSink` dry-run |
 | Loop | `pipeline::Pipeline` | `capture → track → map → OSC`, driven by the TUI or headless monitor |
+| Models | `models::ensure_present` | auto-downloads `models/*.safetensors` from a GitHub Release on first run |
 
 ### Model & PyTorch parity
 
@@ -78,8 +79,15 @@ cargo run --release
 cargo run --release -- --monitor --fake --frames 20
 ```
 
-The tracker loads FAN weights from `models/2dfan4.safetensors`. Generate them
-once with the reference harness (see [`reference/README.md`](reference/README.md)):
+The tracker loads FAN weights from `models/2dfan4.safetensors` and the S3FD
+detector from `models/s3fd.safetensors`. **Both auto-download on first run**
+(from this repo's [`models-v1` release](https://github.com/m96-chan/VRChatCameraOSC/releases/tag/models-v1))
+if missing — no Python/PyTorch needed. Offline, or if the download fails, the
+loop still runs with tracking disabled and prints a clear message.
+
+Contributors validating the candle port against PyTorch (numeric-parity
+tests) still use the reference harness to regenerate these from the original
+pretrained weights — see [`reference/README.md`](reference/README.md):
 
 ```bash
 cd reference && uv venv --python 3.11
@@ -88,7 +96,8 @@ uv pip install --python .venv "torch>=2.2" "numpy<2" safetensors face-alignment 
 ```
 
 CLI flags: `--monitor` (headless), `--fake` (synthetic camera), `--frames N`
-(stop after N frames), `--weights PATH`.
+(stop after N frames), `--weights PATH`, `--detector PATH` (a custom
+`--weights`/`--detector` path is never auto-downloaded).
 
 VRChat must have **OSC enabled** (Action Menu → Options → OSC → Enabled) for the
 end-to-end avatar path.

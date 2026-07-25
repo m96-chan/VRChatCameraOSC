@@ -9,11 +9,13 @@
 //! - [`mapping`] — landmarks → VRChat avatar parameters.
 //! - [`osc`]     — OSC message building + UDP transport / dry-run monitor.
 //! - [`config`]  — persisted settings.
+//! - [`models`]  — auto-download pretrained model weights on first run.
 //! - [`tui`]     — terminal UI state (the primary control surface).
 
 pub mod capture;
 pub mod config;
 pub mod mapping;
+pub mod models;
 pub mod osc;
 pub mod pipeline;
 pub mod tracking;
