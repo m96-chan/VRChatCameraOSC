@@ -21,6 +21,7 @@ Realtime face tracking for VRChat, driven from your webcam and delivered over OS
 
 - **Camera capture & tracking** — grab frames from a webcam and track the face in realtime.
 - **Face mesh** — extract facial landmarks (face mesh) to derive expression and pose.
+- **Hand tracking** — track hand/finger landmarks and drive avatar gestures. *(planned)*
 - **OSC output** — connect to VRChat over OSC and move your own avatar.
 - **Realtime face tracking → avatar** — map tracked landmarks to avatar parameters live.
 - **TUI** — monitor and control everything from the terminal.
@@ -57,6 +58,7 @@ OSC host/port, camera device, and tracking settings will be configurable from th
 
 - [ ] Camera capture pipeline
 - [ ] Face mesh landmark extraction
+- [ ] Hand / finger landmark extraction
 - [ ] Landmark → VRChat OSC parameter mapping
 - [ ] OSC sender (UDP)
 - [ ] TUI: live values, status, and configuration
