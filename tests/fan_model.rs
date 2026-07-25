@@ -75,6 +75,31 @@ fn fantracker_track_returns_68_landmarks() {
 }
 
 #[test]
+fn landmarks_in_image_maps_to_image_space() {
+    // Random FAN + a face box → landmarks_in_image runs the crop→FAN→decode→
+    // transform(invert) path and returns 68 points in image coordinates. Covers
+    // the detector-fed path in CI without weights.
+    use vrchat_camera_osc::tracking::detect::BoundingBox;
+    let device = Device::Cpu;
+    let (_vm, model) = random_fan(&device);
+    let tracker = FanTracker::new(model, device);
+
+    let img = RgbImage::from_pixel(400, 400, Rgb([90, 110, 130]));
+    let bbox = BoundingBox {
+        x1: 120.0,
+        y1: 130.0,
+        x2: 280.0,
+        y2: 320.0,
+        score: 0.99,
+    };
+    let lms = tracker.landmarks_in_image(&img, &bbox).unwrap();
+    assert_eq!(lms.points.len(), NUM_LANDMARKS);
+    for p in &lms.points {
+        assert!(p.x.is_finite() && p.y.is_finite());
+    }
+}
+
+#[test]
 fn crop_and_input_tensor() {
     // crop() to the network input size, then pack to a normalised tensor.
     let mut img = RgbImage::new(200, 200);

@@ -36,6 +36,22 @@ The pretrained weights are downloaded on first run and converted to
 safetensors; they are **not** committed. The small ConvBlock fixture *is*
 committed so architecture parity runs in CI without any download.
 
+## Detector (S3FD) fixtures
+
+`gen_fixtures.py` also exports the **S3FD** face detector and end-to-end outputs
+on the bundled photo `reference/assets/aflw-test.jpg`:
+
+| Path | Committed? | Used by |
+|------|-----------|---------|
+| `models/s3fd.safetensors` | no (≈85 MB, gitignored) | `tests/sfd_parity.rs` |
+| `reference/assets/aflw-test.rgb` + `.json` | no (a face photo, gitignored) | exact input pixels (no JPEG-decoder mismatch) |
+| `reference/assets/sfd_boxes.json` | no | reference detector boxes |
+| `reference/assets/fan_image_landmarks.json` | no | reference end-to-end 68 landmarks |
+
+Everything face-related stays gitignored (local-only), like the FAN weights.
+CI covers the detector port via the committed `tests/sfd_units.rs` (decode /
+NMS / box-scale / random-weight forward), no download needed.
+
 ## What the Rust tests assert
 
 - `fan_convblock_parity` — candle `ConvBlock` vs PyTorch, tiny committed
@@ -45,3 +61,8 @@ committed so architecture parity runs in CI without any download.
 - `fan_parity` — **full-network** candle FAN vs PyTorch on identical weights +
   input. Skips when `models/2dfan4.safetensors` is absent. Observed max abs
   diff ≈ 4e-7, mean ≈ 2e-8 (i.e. parity to f32 precision).
+- `sfd_units` — S3FD decode / NMS / box-scale / random-weight forward. Runs in CI.
+- `sfd_parity` — **full detector + end-to-end** vs reference on the photo. Skips
+  without the weights/assets. Observed: detector box identical to the reference;
+  end-to-end landmarks mean ≈ 0.18 px, max ≈ 3 px (the residual is the crop
+  bilinear-resize differing slightly from OpenCV).

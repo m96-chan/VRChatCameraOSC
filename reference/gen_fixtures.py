@@ -144,8 +144,78 @@ def gen_small_convblock() -> None:
     write_f32(FIX / "convblock_small_output.f32", y.numpy())
 
 
+SFD_URL = "https://www.adrianbulat.com/downloads/python-fan/s3fd-619a316812.pth"
+ASSETS = ROOT / "reference" / "assets"
+
+
+def gen_sfd_and_endtoend() -> None:
+    """Export S3FD weights and generate detector-box + end-to-end landmark
+    fixtures on the bundled face photo. These reference the face image, so they
+    live under reference/assets/ (gitignored) and drive the LOCAL parity tests."""
+    print("[SFD] generating detector + end-to-end fixtures ...")
+    import face_alignment
+    from face_alignment.detection.sfd.sfd_detector import SFDDetector
+    from face_alignment.detection.sfd.net_s3fd import s3fd
+    from skimage import io
+
+    img_path = ASSETS / "aflw-test.jpg"
+    if not img_path.exists():
+        print(f"  !! {img_path} missing; skipping SFD fixtures.")
+        return
+
+    # Export S3FD weights to safetensors (mirrors the reference download).
+    try:
+        from face_alignment.utils import load_file_from_url
+
+        sd = torch.load(load_file_from_url(SFD_URL), map_location="cpu")
+    except Exception as e:  # noqa: BLE001
+        print(f"  !! could not fetch S3FD weights: {e}; skipping.")
+        return
+    net = s3fd()
+    net.load_state_dict(sd)
+    net.eval()
+    save_file(clean_state_dict(net.state_dict()), str(MODELS / "s3fd.safetensors"))
+    print(f"  wrote {(MODELS / 's3fd.safetensors').relative_to(ROOT)}")
+
+    # Load the exact RGB pixels and dump them, so Rust reads identical input
+    # (no JPEG-decoder mismatch).
+    image = io.imread(str(img_path))
+    if image.ndim == 2:
+        image = np.stack([image] * 3, axis=-1)
+    image = image[:, :, :3].astype(np.uint8)
+    h, w = image.shape[:2]
+    (ASSETS / "aflw-test.json").write_text(json.dumps({"h": int(h), "w": int(w)}))
+    (ASSETS / "aflw-test.rgb").write_bytes(np.ascontiguousarray(image).tobytes())
+    print(f"  wrote reference/assets/aflw-test.rgb  shape=({h},{w},3)")
+
+    # Reference detector boxes on this image.
+    det = SFDDetector(device="cpu")
+    boxes = det.detect_from_image(image.copy())
+    box_list = [
+        {"x1": float(b[0]), "y1": float(b[1]), "x2": float(b[2]), "y2": float(b[3]), "score": float(b[4])}
+        for b in boxes
+    ]
+    (ASSETS / "sfd_boxes.json").write_text(json.dumps(box_list, indent=2))
+    print(f"  wrote reference/assets/sfd_boxes.json  ({len(box_list)} boxes)")
+
+    # End-to-end landmarks via the full reference pipeline (flip_input=False so
+    # the Rust path, which doesn't flip-average, matches).
+    fa = face_alignment.FaceAlignment(
+        face_alignment.LandmarksType.TWO_D, flip_input=False, device="cpu"
+    )
+    preds = fa.get_landmarks_from_image(image.copy())
+    if preds:
+        lms = preds[0]  # (68, 2) image space
+        lm_list = [{"x": float(lms[i, 0]), "y": float(lms[i, 1])} for i in range(lms.shape[0])]
+        (ASSETS / "fan_image_landmarks.json").write_text(json.dumps(lm_list, indent=2))
+        print(f"  wrote reference/assets/fan_image_landmarks.json  ({len(lm_list)} pts)")
+    else:
+        print("  !! reference found no face; end-to-end fixture skipped.")
+
+
 if __name__ == "__main__":
     gen_small_convblock()
     gen_transform_cases()
     gen_full_fan()
+    gen_sfd_and_endtoend()
     print("done.")

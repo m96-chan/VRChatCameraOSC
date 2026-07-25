@@ -30,6 +30,7 @@ use vrchat_camera_osc::config::Config;
 use vrchat_camera_osc::mapping::Mapper;
 use vrchat_camera_osc::osc::{MonitorSink, OscSink, UdpOscSender};
 use vrchat_camera_osc::pipeline::Pipeline;
+use vrchat_camera_osc::tracking::detect::sfd::SfdDetector;
 use vrchat_camera_osc::tracking::fan::FanTracker;
 use vrchat_camera_osc::tracking::FaceTracker;
 use vrchat_camera_osc::tui::{render, UiState};
@@ -39,6 +40,7 @@ struct Args {
     fake: bool,
     frames: Option<u64>,
     weights: PathBuf,
+    detector: PathBuf,
 }
 
 fn parse_args() -> Args {
@@ -47,6 +49,7 @@ fn parse_args() -> Args {
         fake: false,
         frames: None,
         weights: PathBuf::from("models/2dfan4.safetensors"),
+        detector: PathBuf::from("models/s3fd.safetensors"),
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -59,8 +62,16 @@ fn parse_args() -> Args {
                     a.weights = PathBuf::from(p);
                 }
             }
+            "--detector" => {
+                if let Some(p) = it.next() {
+                    a.detector = PathBuf::from(p);
+                }
+            }
             "-h" | "--help" => {
-                println!("vrchat-camera-osc [--monitor] [--fake] [--frames N] [--weights PATH]");
+                println!(
+                    "vrchat-camera-osc [--monitor] [--fake] [--frames N] \
+                     [--weights FAN.safetensors] [--detector S3FD.safetensors]"
+                );
                 std::process::exit(0);
             }
             _ => eprintln!("ignoring unknown argument: {arg}"),
@@ -106,23 +117,42 @@ fn build_sink(cfg: &Config) -> Result<Box<dyn OscSink>> {
     }
 }
 
-fn build_tracker(weights: &PathBuf) -> Option<Box<dyn FaceTracker>> {
-    if weights.exists() {
-        match FanTracker::from_safetensors(weights) {
-            Ok(t) => Some(Box::new(t)),
-            Err(e) => {
-                eprintln!("failed to load FAN weights {}: {e}", weights.display());
-                None
-            }
-        }
-    } else {
+fn build_tracker(weights: &PathBuf, detector_path: &PathBuf) -> Option<Box<dyn FaceTracker>> {
+    if !weights.exists() {
         eprintln!(
             "no FAN weights at {} — tracking disabled (run reference/gen_fixtures.py). \
              The loop still runs; it just won't emit parameters.",
             weights.display()
         );
-        None
+        return None;
     }
+    let mut tracker = match FanTracker::from_safetensors(weights) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("failed to load FAN weights {}: {e}", weights.display());
+            return None;
+        }
+    };
+
+    // Attach the S3FD detector when its weights are present, so the face is
+    // auto-cropped; otherwise fall back to whole-frame tracking.
+    if detector_path.exists() {
+        match SfdDetector::from_safetensors(detector_path) {
+            Ok(det) => {
+                tracker = tracker.with_detector(Box::new(det));
+            }
+            Err(e) => eprintln!(
+                "failed to load detector {}: {e} — using whole-frame tracking",
+                detector_path.display()
+            ),
+        }
+    } else {
+        eprintln!(
+            "no detector weights at {} — using whole-frame tracking (see issue #9)",
+            detector_path.display()
+        );
+    }
+    Some(Box::new(tracker))
 }
 
 fn main() -> Result<()> {
@@ -135,7 +165,7 @@ fn main() -> Result<()> {
     cfg.validate()?;
 
     let camera = build_camera(&cfg, args.fake);
-    let tracker = build_tracker(&args.weights);
+    let tracker = build_tracker(&args.weights, &args.detector);
     let mapper = Mapper::with_smoothing(cfg.tracking.smoothing);
     let sink = build_sink(&cfg)?;
     let pipeline = Pipeline::new(camera, tracker, mapper, sink);

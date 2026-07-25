@@ -6,6 +6,8 @@ Cargo.lock.orig
 reference/.venv/
 __pycache__/
 *.pyc
+# Detector parity assets contain a face photo + reference outputs — local only
+reference/assets/
 
 # Generated model weights / fixtures are downloaded, not committed (see reference/README.md)
 /models/*.safetensors

@@ -13,6 +13,7 @@ pub mod model;
 pub mod preprocess;
 
 use crate::capture::Frame;
+use crate::tracking::detect::{BoundingBox, FaceDetector};
 use crate::tracking::{FaceLandmarks, FaceTracker, Landmark, NUM_LANDMARKS};
 use candle_core::{Device, Result as CandleResult, Tensor};
 use candle_nn::VarBuilder;
@@ -22,33 +23,61 @@ pub use model::Fan;
 
 /// FAN heatmap resolution (64x64).
 pub const HEATMAP_RES: u32 = 64;
+/// Face-box centre Y offset, as a fraction of box height (reference constant).
+pub const CENTER_Y_OFFSET: f32 = 0.12;
+/// Detector reference scale used to turn a box into a FAN crop scale.
+pub const REFERENCE_SCALE: f32 = 195.0;
+
+/// Convert a detected face box to the FAN `(center, scale)`, exactly as
+/// `face_alignment` does: centre is the box centre nudged up by
+/// `CENTER_Y_OFFSET * height`, and `scale = (w + h) / REFERENCE_SCALE`.
+pub fn box_to_center_scale(b: &BoundingBox) -> ((f32, f32), f32) {
+    let cx = (b.x1 + b.x2) / 2.0;
+    let cy = (b.y1 + b.y2) / 2.0 - (b.y2 - b.y1) * CENTER_Y_OFFSET;
+    let scale = (b.x2 - b.x1 + (b.y2 - b.y1)) / REFERENCE_SCALE;
+    ((cx, cy), scale)
+}
 
 /// A [`FaceTracker`] backed by the FAN network.
 ///
-/// Detection is not yet wired (a follow-up will add an SFD/BlazeFace detector);
-/// [`FanTracker::track`] currently treats the **whole frame** as the face
-/// region — correct for a face-fills-the-frame webcam setup — by resizing the
-/// frame to the network's 256x256 input. Landmarks are returned in frame pixels.
+/// With a detector attached, [`FanTracker::track`] detects the face, crops
+/// around it (reference `crop`), runs FAN, and maps landmarks back to image
+/// pixels. Without one, it falls back to treating the whole frame as the face
+/// (resize to 256) — fine when the face fills the frame.
 pub struct FanTracker {
     model: Fan,
     device: Device,
+    detector: Option<Box<dyn FaceDetector>>,
 }
 
 impl FanTracker {
-    /// Load a tracker from a safetensors weights file (exported by the reference
-    /// harness). Runs on CPU.
+    /// Load a tracker from a safetensors weights file. No detector (whole-frame).
     pub fn from_safetensors(path: impl AsRef<std::path::Path>) -> CandleResult<Self> {
         let device = Device::Cpu;
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(&[path.as_ref()], candle_core::DType::F32, &device)?
         };
         let model = Fan::load(vb)?;
-        Ok(Self { model, device })
+        Ok(Self {
+            model,
+            device,
+            detector: None,
+        })
     }
 
     /// Construct from an already-built model (used in tests).
     pub fn new(model: Fan, device: Device) -> Self {
-        Self { model, device }
+        Self {
+            model,
+            device,
+            detector: None,
+        }
+    }
+
+    /// Attach a face detector so `track` auto-crops around the detected face.
+    pub fn with_detector(mut self, detector: Box<dyn FaceDetector>) -> Self {
+        self.detector = Some(detector);
+        self
     }
 
     /// Run the network on a preprocessed `1x3x256x256` tensor and return the
@@ -75,13 +104,52 @@ impl FanTracker {
         FaceLandmarks::new(points)
             .map_err(|e| candle_core::Error::Msg(format!("landmark decode: {e}")))
     }
+
+    /// Detect-free path: crop around a known face box, run FAN, and return
+    /// landmarks in **image pixel** coordinates (mirrors the reference:
+    /// `crop` → FAN → `get_preds_fromhm(center, scale)`).
+    pub fn landmarks_in_image(
+        &self,
+        image: &RgbImage,
+        bbox: &BoundingBox,
+    ) -> CandleResult<FaceLandmarks> {
+        let (center, scale) = box_to_center_scale(bbox);
+        let crop = preprocess::crop(image, center, scale, preprocess::INPUT_RES);
+        let input = preprocess::to_input_tensor(&crop, &self.device)?;
+        let hm = self.model.forward(&input)?;
+        let preds = decode::get_preds_from_hm(&hm)?;
+        let points: Vec<Landmark> = preds[0]
+            .iter()
+            .map(|p| {
+                let (ix, iy) =
+                    preprocess::transform((p.x, p.y), center, scale, HEATMAP_RES as f32, true);
+                Landmark {
+                    x: ix as f32,
+                    y: iy as f32,
+                    score: p.score,
+                }
+            })
+            .collect();
+        FaceLandmarks::new(points)
+            .map_err(|e| candle_core::Error::Msg(format!("landmark decode: {e}")))
+    }
 }
 
 impl FaceTracker for FanTracker {
     fn track(&mut self, frame: &Frame) -> anyhow::Result<Option<FaceLandmarks>> {
-        // Whole-frame-as-face: resize to the 256x256 network input.
         let img = RgbImage::from_raw(frame.width, frame.height, frame.data.clone())
             .ok_or_else(|| anyhow::anyhow!("frame buffer did not match dimensions"))?;
+
+        // With a detector: detect, take the highest-scoring face, crop around it.
+        if let Some(detector) = self.detector.as_ref() {
+            let boxes = detector.detect(&img)?;
+            return match boxes.iter().max_by(|a, b| a.score.total_cmp(&b.score)) {
+                Some(best) => Ok(Some(self.landmarks_in_image(&img, best)?)),
+                None => Ok(None),
+            };
+        }
+
+        // Whole-frame fallback: resize to the 256x256 network input.
         let resized = image::imageops::resize(
             &img,
             preprocess::INPUT_RES,

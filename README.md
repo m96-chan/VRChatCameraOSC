@@ -47,6 +47,7 @@ swappable:
 | Stage | Module | Notes |
 |-------|--------|-------|
 | Capture | `capture::CameraSource` | macOS AVFoundation via `nokhwa`; synthetic `FakeCamera` for tests/headless |
+| Detection | `tracking::detect::FaceDetector` | `sfd::SfdDetector` — the **S3FD** face detector ported to candle; auto-crops before FAN |
 | Tracking | `tracking::FaceTracker` | `fan::FanTracker` — the face-alignment **2DFAN4** net ported to pure-Rust **candle** |
 | Mapping | `mapping::Mapper` | iBUG-68 landmarks → normalised avatar params (mouth/blink/brows/head pose), clamped + smoothed |
 | OSC | `osc::OscSink` | `UdpOscSender` to VRChat, or `MonitorSink` dry-run |
@@ -100,7 +101,7 @@ OSC host/port, camera device, and tracking settings will be configurable from th
 
 - [x] Camera capture pipeline
 - [x] Face mesh landmark extraction (FAN / candle, PyTorch-parity verified)
-- [ ] Face detector (auto-crop the face before FAN)
+- [x] Face detector (S3FD / candle) — auto-crop the face before FAN
 - [ ] Hand / finger landmark extraction
 - [x] Landmark → VRChat OSC parameter mapping
 - [x] OSC sender (UDP) + dry-run monitor
