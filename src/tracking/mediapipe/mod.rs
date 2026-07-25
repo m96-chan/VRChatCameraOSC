@@ -192,9 +192,10 @@ pub struct MediapipeTracker {
 impl MediapipeTracker {
     /// Load the three ONNX models from explicit paths.
     ///
-    /// Runs on GPU when built with the `cuda` feature and a device is found
-    /// (`Device::cuda_if_available` falls back to CPU otherwise, matching
-    /// `FanTracker`/`SfdDetector`).
+    /// Always runs on CPU, including under `--features cuda`: candle-onnx's
+    /// `simple_eval` materializes graph weights on CPU, so GPU inputs would
+    /// mismatch. GPU execution for this backend is future work (issue #17);
+    /// the `cuda` feature still accelerates the FAN backend.
     pub fn from_paths(
         detector: impl AsRef<Path>,
         landmark: impl AsRef<Path>,

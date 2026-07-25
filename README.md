@@ -148,7 +148,9 @@ time).
 The default MediaPipe backend measured **~6.6 FPS on CPU** (16-core desktop,
 `--release`) — three ONNX graph evaluations per frame via `candle-onnx`'s
 interpreter. Usable for expression sync; GPU execution for this backend is a
-future optimization.
+future optimization. Note the `cuda` feature does **not** accelerate this
+backend (candle-onnx's evaluator materializes weights on CPU, so the stack
+pins itself to CPU); `cuda` still applies to the FAN backend below.
 
 The FAN backend: `candle` builds with no acceleration backend by default
 (CPU fallback only), which — combined with running the S3FD detector on every

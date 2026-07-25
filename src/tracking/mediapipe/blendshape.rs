@@ -27,7 +27,11 @@ pub struct BlendshapeModel {
 
 impl BlendshapeModel {
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
-        let device = Device::cuda_if_available(0)?;
+        // CPU on purpose, even under `--features cuda`: candle-onnx's
+        // `simple_eval` materializes the graph's initializers (weights) on
+        // CPU, so a CUDA input tensor hits "device mismatch in conv2d".
+        // GPU execution for the ONNX path is future work (issue #17).
+        let device = Device::Cpu;
         let model = candle_onnx::read_file(path.as_ref())?;
         let input_name = model
             .graph
