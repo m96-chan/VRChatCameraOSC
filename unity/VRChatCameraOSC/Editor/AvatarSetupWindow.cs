@@ -95,7 +95,19 @@ namespace VRChatCameraOsc.AvatarSetup
 
             EditorGUILayout.Space();
             var wired = VrcExpressionParametersMerger.IsFullyWired(_avatar.expressionParameters, OscParameterSpec.All);
-            EditorGUILayout.LabelField("Status", wired ? "ON — wired" : "OFF — not wired");
+            var activeLayers = CountActiveLayers(_avatar);
+            EditorGUILayout.LabelField(
+                "Status",
+                (wired ? "ON — parameters declared" : "OFF — not applied yet") +
+                $"  |  {activeLayers}/{OscParameterSpec.All.Count} actually wired (have an FX layer)");
+            if (wired && activeLayers < OscParameterSpec.All.Count)
+            {
+                EditorGUILayout.HelpBox(
+                    $"{OscParameterSpec.All.Count - activeLayers} parameter(s) are declared but not driving " +
+                    "anything — their blend shape picker above is on (skip). That's fine if intentional.",
+                    MessageType.Info);
+            }
+
             var newWired = GUILayout.Toggle(wired, wired ? "ON (click to remove)" : "OFF (click to apply)", "Button");
             if (newWired != wired)
             {
@@ -108,6 +120,18 @@ namespace VRChatCameraOsc.AvatarSetup
                     RunRemove();
                 }
             }
+        }
+
+        /// <summary>How many of the 10 parameters currently have an <c>OSC_*</c>
+        /// FX layer actually driving them (vs. just being declared).</summary>
+        static int CountActiveLayers(VRCAvatarDescriptor avatar)
+        {
+            var controller = TryGetFxController(avatar);
+            if (controller == null)
+            {
+                return 0;
+            }
+            return OscParameterSpec.All.Count(s => OscAnimatorLayerBuilder.HasLayer(controller, s.Name));
         }
 
         void DrawBlendShapePicker(OscParamSpec spec, SkinnedMeshRenderer[] renderers)
