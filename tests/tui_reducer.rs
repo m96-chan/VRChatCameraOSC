@@ -16,6 +16,7 @@ fn defaults_are_sensible() {
     assert_eq!(s.osc_target(), "127.0.0.1:9000");
     assert_eq!(s.selected_field, ConfigField::Host);
     assert!(s.live_values.is_empty());
+    assert!(!s.recalibrate_requested);
 }
 
 #[test]
@@ -63,6 +64,13 @@ fn d_toggles_dry_run() {
     assert!(s.dry_run);
     s.on_key(KeyCode::Char('d'));
     assert!(!s.dry_run);
+}
+
+#[test]
+fn c_requests_recalibration() {
+    let mut s = UiState::new();
+    s.on_key(KeyCode::Char('c'));
+    assert!(s.recalibrate_requested);
 }
 
 #[test]

@@ -131,6 +131,9 @@ pub struct UiState {
     pub dry_run: bool,
     /// Config field under the edit cursor.
     pub selected_field: ConfigField,
+    /// Set by `c`; the app loop performs the (blocking) recalibration, then
+    /// clears this. Pure state only — no I/O happens in [`UiState`] itself.
+    pub recalibrate_requested: bool,
 }
 
 impl Default for UiState {
@@ -148,6 +151,7 @@ impl Default for UiState {
             smoothing: 0.5,
             dry_run: false,
             selected_field: ConfigField::default(),
+            recalibrate_requested: false,
         }
     }
 }
@@ -206,6 +210,7 @@ impl UiState {
     /// - `Tab`/`Right` next panel, `BackTab`/`Left` previous panel.
     /// - `Up`/`Down` move the Config field cursor.
     /// - `d` toggles dry-run.
+    /// - `c` requests a neutral-pose recalibration (the app loop performs it).
     /// - On Config: type into the selected field (`Host` text, `Port` digits,
     ///   `Smoothing` `+`/`-`), `Backspace` erases.
     pub fn on_key(&mut self, key: KeyCode) {
@@ -220,6 +225,7 @@ impl UiState {
             }
             KeyCode::Char('?') => self.show_help = !self.show_help,
             KeyCode::Char('d') => self.dry_run = !self.dry_run,
+            KeyCode::Char('c') => self.recalibrate_requested = true,
             KeyCode::Tab | KeyCode::Right => self.tab = self.tab.next(),
             KeyCode::BackTab | KeyCode::Left => self.tab = self.tab.prev(),
             KeyCode::Up => self.selected_field = self.selected_field.prev(),

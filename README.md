@@ -49,7 +49,7 @@ swappable:
 | Capture | `capture::CameraSource` | `capture::native::NativeCamera` — AVFoundation on macOS, V4L2 on Linux (`Windows` planned), via `nokhwa`; synthetic `FakeCamera` for tests/headless |
 | Detection | `tracking::detect::FaceDetector` | `sfd::SfdDetector` — the **S3FD** face detector ported to candle; auto-crops before FAN |
 | Tracking | `tracking::FaceTracker` | `fan::FanTracker` — the face-alignment **2DFAN4** net ported to pure-Rust **candle** |
-| Mapping | `mapping::Mapper` | iBUG-68 landmarks → normalised avatar params (mouth/blink/brows/head pose), clamped + smoothed |
+| Mapping | `mapping::Mapper` | iBUG-68 landmarks → 10 normalised avatar params (mouth open/smile/wide, per-eye blink, per-brow raise, head pose), clamped + smoothed |
 | OSC | `osc::OscSink` | `UdpOscSender` to VRChat, or `MonitorSink` dry-run |
 | Loop | `pipeline::Pipeline` | `capture → track → map → OSC`, driven by the TUI or headless monitor |
 | Models | `models::ensure_present` | auto-downloads `models/*.safetensors` from a GitHub Release on first run |
@@ -98,10 +98,24 @@ uv pip install --python .venv "torch>=2.2" "numpy<2" safetensors face-alignment 
 CLI flags: `--monitor` (headless), `--fake` (synthetic camera), `--frames N`
 (stop after N frames), `--weights PATH`, `--detector PATH` (a custom
 `--weights`/`--detector` path is never auto-downloaded), `--detect-interval N`
-(see Performance below).
+(see Performance below), `--calibrate-frames N` (see Calibration below; `0`
+skips calibration).
 
 VRChat must have **OSC enabled** (Action Menu → Options → OSC → Enabled) for the
 end-to-end avatar path.
+
+### Neutral-pose calibration
+
+The mapping's "neutral" reference points (what counts as a relaxed brow, a
+flat mouth, etc.) are calibrated against a synthetic test face by default,
+which doesn't match every real face/camera — this can leave a parameter
+permanently reading `0` even while it's genuinely responding to expression
+changes (issue #15). To fix this, the app captures a short window at startup
+(`--calibrate-frames N`, default 10 frames) — **hold a relaxed, forward-facing
+expression** while it says `calibrating neutral pose ...` — and re-derives the
+neutral baselines from what it actually sees. In the TUI, press **`c`** at any
+time to redo it (camera angle or lighting changed, or you weren't ready the
+first time).
 
 ### Performance
 
@@ -125,6 +139,35 @@ optimizations address this:
   (capture-rate-limited) on an RTX 5090, vs. ~0.5 FPS CPU-only — **not**
   part of `default`, since macOS has no CUDA and most end users won't have an
   NVIDIA GPU + toolkit to build against.
+
+## Avatar setup (required for the avatar to actually move)
+
+VRChat's OSC layer only **writes values into parameters your avatar already
+defines** — it doesn't create facial expressions on its own, and none of
+VRChat's built-in avatar parameters (`GestureLeft/Right`, `Viseme`, `AFK`,
+etc.) cover facial expression or head pose. A stock/default avatar, or any
+avatar that hasn't been specifically wired up, **will not react** to this
+app's output. To make an avatar respond, add these as **Float** VRC
+Expression Parameters (Unity + VRChat SDK3) and drive blend shapes / bones
+from them in the FX Animator Controller:
+
+| OSC address | Range | Meaning |
+|---|---|---|
+| `/avatar/parameters/MouthOpen` | `0..1` | mouth opening amount |
+| `/avatar/parameters/EyeBlinkLeft` | `0..1` | left eye closed amount (`1` = closed) |
+| `/avatar/parameters/EyeBlinkRight` | `0..1` | right eye closed amount |
+| `/avatar/parameters/BrowUpLeft` | `0..1` | left eyebrow raise |
+| `/avatar/parameters/BrowUpRight` | `0..1` | right eyebrow raise |
+| `/avatar/parameters/MouthSmile` | `0..1` | mouth-corner vertical lift (smile) |
+| `/avatar/parameters/MouthWide` | `-1..1` | mouth-corner horizontal stretch (`+` wide/grin, `−` pucker) |
+| `/avatar/parameters/HeadRoll` | `-1..1` | head tilt |
+| `/avatar/parameters/HeadYaw` | `-1..1` | head turn left/right |
+| `/avatar/parameters/HeadPitch` | `-1..1` | head tilt up/down |
+
+Full derivation (which landmarks, which formula) is documented in
+[`src/mapping/mod.rs`](src/mapping/mod.rs). See VRChat's own docs for the
+mechanics: [OSC Avatar Parameters](https://docs.vrchat.com/docs/osc-avatar-parameters),
+[Avatar Animator Parameters](https://creators.vrchat.com/avatars/animator-parameters/).
 
 ## Configuration
 

@@ -58,6 +58,11 @@ const SFD_MODEL_URL: &str =
 /// tracking through the frames in between.
 const DEFAULT_DETECT_INTERVAL: u32 = 8;
 
+/// Default neutral-pose calibration window (issue #15): captured once at
+/// startup (and again on demand via `c` in the TUI), assuming the subject
+/// holds a relaxed, forward-facing expression throughout.
+const DEFAULT_CALIBRATE_FRAMES: u32 = 10;
+
 struct Args {
     monitor: bool,
     fake: bool,
@@ -65,6 +70,7 @@ struct Args {
     weights: PathBuf,
     detector: PathBuf,
     detect_interval: u32,
+    calibrate_frames: u32,
 }
 
 fn parse_args() -> Args {
@@ -75,6 +81,7 @@ fn parse_args() -> Args {
         weights: default_weights_path(),
         detector: default_detector_path(),
         detect_interval: DEFAULT_DETECT_INTERVAL,
+        calibrate_frames: DEFAULT_CALIBRATE_FRAMES,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -97,11 +104,16 @@ fn parse_args() -> Args {
                     a.detect_interval = n;
                 }
             }
+            "--calibrate-frames" => {
+                if let Some(n) = it.next().and_then(|v| v.parse().ok()) {
+                    a.calibrate_frames = n;
+                }
+            }
             "-h" | "--help" => {
                 println!(
                     "vrchat-camera-osc [--monitor] [--fake] [--frames N] \
                      [--weights FAN.safetensors] [--detector S3FD.safetensors] \
-                     [--detect-interval N]"
+                     [--detect-interval N] [--calibrate-frames N]"
                 );
                 std::process::exit(0);
             }
@@ -226,12 +238,34 @@ fn main() -> Result<()> {
     let tracker = build_tracker(&args.weights, &args.detector, args.detect_interval);
     let mapper = Mapper::with_smoothing(cfg.tracking.smoothing);
     let sink = build_sink(&cfg)?;
-    let pipeline = Pipeline::new(camera, tracker, mapper, sink);
+    let mut pipeline = Pipeline::new(camera, tracker, mapper, sink);
+
+    calibrate_neutral(&mut pipeline, args.calibrate_frames);
 
     if args.monitor {
         run_monitor(pipeline, &cfg, args.frames)
     } else {
-        run_tui(pipeline, &cfg)
+        run_tui(pipeline, &cfg, args.calibrate_frames)
+    }
+}
+
+/// Capture a short window assuming a relaxed, forward-facing expression and
+/// re-derive the mapper's neutral-pose baselines from it (issue #15) — fixes
+/// the synthetic-geometry defaults not matching every real face/camera, which
+/// otherwise leaves some expression parameters clamped at one end of their
+/// range. `frames == 0` (e.g. `--calibrate-frames 0`) skips this entirely.
+/// Never fails the caller: an error just skips calibration for this run.
+fn calibrate_neutral(pipeline: &mut Pipeline, frames: u32) {
+    if frames == 0 {
+        return;
+    }
+    println!("calibrating neutral pose — hold a relaxed, forward-facing expression...");
+    match pipeline.calibrate_neutral(frames) {
+        Ok(0) => eprintln!(
+            "calibration found no face in {frames} frames — using default neutral thresholds"
+        ),
+        Ok(n) => println!("calibrated from {n}/{frames} frames"),
+        Err(e) => eprintln!("calibration failed: {e:#} — using default neutral thresholds"),
     }
 }
 
@@ -280,7 +314,7 @@ fn run_monitor(mut pipeline: Pipeline, cfg: &Config, frames: Option<u64>) -> Res
 }
 
 /// TUI: run the pipeline while drawing status / live values and handling keys.
-fn run_tui(mut pipeline: Pipeline, cfg: &Config) -> Result<()> {
+fn run_tui(mut pipeline: Pipeline, cfg: &Config, calibrate_frames: u32) -> Result<()> {
     let mut state = UiState::new();
     state.set_osc_target(cfg.osc.host.clone(), cfg.osc.port);
     state.set_smoothing(cfg.tracking.smoothing);
@@ -291,7 +325,7 @@ fn run_tui(mut pipeline: Pipeline, cfg: &Config) -> Result<()> {
     execute!(stdout, EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(stdout))?;
 
-    let result = tui_loop(&mut terminal, &mut state, &mut pipeline);
+    let result = tui_loop(&mut terminal, &mut state, &mut pipeline, calibrate_frames);
 
     disable_raw_mode()?;
     execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -303,11 +337,21 @@ fn tui_loop(
     terminal: &mut Terminal<CrosstermBackend<Stdout>>,
     state: &mut UiState,
     pipeline: &mut Pipeline,
+    calibrate_frames: u32,
 ) -> Result<()> {
     let mut fps = FpsCounter::new(30);
     let mut last = Instant::now();
 
     while !state.should_quit {
+        if state.recalibrate_requested {
+            state.recalibrate_requested = false;
+            // Blocking is acceptable here: recalibration is a rare, brief,
+            // user-initiated pause, not part of the steady-state frame loop.
+            let _ = pipeline.calibrate_neutral(calibrate_frames);
+            last = Instant::now();
+            continue;
+        }
+
         let outcome = pipeline.step()?;
         let now = Instant::now();
         fps.record(now.duration_since(last));

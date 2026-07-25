@@ -138,14 +138,17 @@ fn close_eye(points: &mut [Landmark], upper: [usize; 2], lower: [usize; 2]) {
 }
 
 #[test]
-fn emits_all_seven_named_params_with_finite_values() {
+fn emits_all_ten_named_params_with_finite_values() {
     let mut m = Mapper::new();
     let out = m.map(&neutral_face());
     let expected = [
         "MouthOpen",
         "EyeBlinkLeft",
         "EyeBlinkRight",
-        "BrowUp",
+        "BrowUpLeft",
+        "BrowUpRight",
+        "MouthSmile",
+        "MouthWide",
         "HeadRoll",
         "HeadYaw",
         "HeadPitch",
@@ -212,9 +215,10 @@ fn blink_high_when_eye_closed_low_when_open_independent_sides() {
 }
 
 #[test]
-fn brow_up_rises_when_brows_raised() {
+fn brow_up_rises_when_brows_raised_both_sides() {
     let mut m = Mapper::new();
-    let neutral = get(&m.map(&neutral_face()), "BrowUp");
+    let out = m.map(&neutral_face());
+    let (neutral_l, neutral_r) = (get(&out, "BrowUpLeft"), get(&out, "BrowUpRight"));
 
     // Raise both brows (move them further above the eyes: smaller y).
     let mut raised = neutral_points();
@@ -222,14 +226,100 @@ fn brow_up_rises_when_brows_raised() {
         lm.y -= 6.0;
     }
     let mut m2 = Mapper::new();
-    let raised_v = get(&m2.map(&face_from(raised)), "BrowUp");
+    let out2 = m2.map(&face_from(raised));
+    let (raised_l, raised_r) = (get(&out2, "BrowUpLeft"), get(&out2, "BrowUpRight"));
 
-    assert!(neutral < 0.1, "neutral brow should be ~0, got {neutral}");
-    assert!(raised_v > neutral, "raising brows should increase BrowUp");
     assert!(
-        raised_v > 0.5,
-        "raised brow should be substantial, got {raised_v}"
+        neutral_l < 0.1,
+        "neutral left brow should be ~0, got {neutral_l}"
     );
+    assert!(
+        neutral_r < 0.1,
+        "neutral right brow should be ~0, got {neutral_r}"
+    );
+    assert!(raised_l > neutral_l && raised_r > neutral_r);
+    assert!(
+        raised_l > 0.5 && raised_r > 0.5,
+        "raised brows should be substantial, got left={raised_l} right={raised_r}"
+    );
+}
+
+#[test]
+fn brow_up_left_and_right_are_independent() {
+    // Raise only the LEFT brow (22..26).
+    let mut left_only = neutral_points();
+    for lm in &mut left_only[22..=26] {
+        lm.y -= 6.0;
+    }
+    let mut m = Mapper::new();
+    let out = m.map(&face_from(left_only));
+    assert!(
+        get(&out, "BrowUpLeft") > 0.5,
+        "left brow should read raised, got {}",
+        get(&out, "BrowUpLeft")
+    );
+    assert!(
+        get(&out, "BrowUpRight") < 0.1,
+        "right brow should stay neutral, got {}",
+        get(&out, "BrowUpRight")
+    );
+
+    // Raise only the RIGHT brow (17..21).
+    let mut right_only = neutral_points();
+    for lm in &mut right_only[17..=21] {
+        lm.y -= 6.0;
+    }
+    let mut m2 = Mapper::new();
+    let out2 = m2.map(&face_from(right_only));
+    assert!(get(&out2, "BrowUpRight") > 0.5);
+    assert!(get(&out2, "BrowUpLeft") < 0.1);
+}
+
+#[test]
+fn mouth_smile_rises_when_corners_lift() {
+    let mut m = Mapper::new();
+    let neutral = get(&m.map(&neutral_face()), "MouthSmile");
+    assert!(neutral < 0.1, "neutral smile should be ~0, got {neutral}");
+
+    // Lift both mouth corners (48, 54) up (smaller y) toward the mouth centre.
+    let mut smiling = neutral_points();
+    smiling[48].y -= 5.0;
+    smiling[54].y -= 5.0;
+    let mut m2 = Mapper::new();
+    let smile_v = get(&m2.map(&face_from(smiling)), "MouthSmile");
+
+    assert!(smile_v > neutral, "lifted corners should raise MouthSmile");
+    assert!((0.0..=1.0).contains(&smile_v));
+}
+
+#[test]
+fn mouth_wide_signed_for_stretch_vs_pucker() {
+    let mut m = Mapper::new();
+    let neutral = get(&m.map(&neutral_face()), "MouthWide");
+    assert_abs_diff_eq!(neutral, 0.0, epsilon = 0.15);
+
+    // Stretch the corners apart horizontally -> positive.
+    let mut wide = neutral_points();
+    wide[48].x -= 8.0;
+    wide[54].x += 8.0;
+    let mut mw = Mapper::new();
+    let wide_v = get(&mw.map(&face_from(wide)), "MouthWide");
+    assert!(
+        wide_v > 0.1,
+        "stretched mouth should be positive, got {wide_v}"
+    );
+
+    // Pull the corners together (pucker) -> negative.
+    let mut pucker = neutral_points();
+    pucker[48].x += 5.0;
+    pucker[54].x -= 5.0;
+    let mut mp = Mapper::new();
+    let pucker_v = get(&mp.map(&face_from(pucker)), "MouthWide");
+    assert!(
+        pucker_v < -0.1,
+        "puckered mouth should be negative, got {pucker_v}"
+    );
+    assert!((-1.0..=1.0).contains(&wide_v) && (-1.0..=1.0).contains(&pucker_v));
 }
 
 #[test]
@@ -293,11 +383,18 @@ fn extreme_geometry_stays_within_range() {
     let mut m = Mapper::new();
     let out = m.map(&face_from(p));
 
-    for name in ["MouthOpen", "EyeBlinkLeft", "EyeBlinkRight", "BrowUp"] {
+    for name in [
+        "MouthOpen",
+        "EyeBlinkLeft",
+        "EyeBlinkRight",
+        "BrowUpLeft",
+        "BrowUpRight",
+        "MouthSmile",
+    ] {
         let v = get(&out, name);
         assert!((0.0..=1.0).contains(&v), "{name}={v} out of 0..1");
     }
-    for name in ["HeadRoll", "HeadYaw", "HeadPitch"] {
+    for name in ["MouthWide", "HeadRoll", "HeadYaw", "HeadPitch"] {
         let v = get(&out, name);
         assert!((-1.0..=1.0).contains(&v), "{name}={v} out of -1..1");
     }
@@ -316,7 +413,7 @@ fn degenerate_landmarks_produce_bounded_finite_output() {
     ];
     let mut m = Mapper::new();
     let out = m.map(&face_from(pts));
-    assert_eq!(out.len(), 7);
+    assert_eq!(out.len(), 10);
     for p in &out {
         if let OscValue::Float(v) = p.value {
             assert!(v.is_finite());
@@ -366,4 +463,90 @@ fn default_mapper_applies_no_smoothing() {
     let b = get(&Mapper::new().map(&face_from(open)), "MouthOpen");
     assert_abs_diff_eq!(a, b, epsilon = 1e-6);
     assert!(a > 0.8);
+}
+
+/// A "neutral" pose whose brows sit lower and mouth corners sit lower than
+/// `neutral_points()` assumes — simulating a real face/camera whose resting
+/// geometry doesn't match the synthetic defaults (issue #15: this is exactly
+/// what left `BrowUpLeft`/`BrowUpRight`/`MouthSmile` clamped to 0 on a real
+/// webcam despite genuinely responding to expression changes).
+fn biased_neutral_points() -> Vec<Landmark> {
+    let mut p = neutral_points();
+    for lm in &mut p[17..=26] {
+        lm.y += 4.0; // brows sit closer to the eyes than the synthetic default
+    }
+    p[48].y += 3.0; // mouth corners rest lower than the synthetic default
+    p[54].y += 3.0;
+    p
+}
+
+#[test]
+fn calibrate_zeroes_previously_biased_params_at_the_calibrated_pose() {
+    let biased = biased_neutral_points();
+
+    // Before calibration: the biased pose reads negative (clamped to 0) for
+    // all three, exactly the reported "stuck at 0" symptom.
+    let before = Mapper::new().map(&face_from(biased.clone()));
+    assert_eq!(get(&before, "BrowUpLeft"), 0.0);
+    assert_eq!(get(&before, "BrowUpRight"), 0.0);
+    assert_eq!(get(&before, "MouthSmile"), 0.0);
+
+    let mut m = Mapper::new();
+    let samples: Vec<FaceLandmarks> = (0..5).map(|_| face_from(biased.clone())).collect();
+    m.calibrate(&samples);
+
+    // After calibrating on that exact pose, mapping it again should read ~0
+    // (the new neutral), not clamped-away-from-negative.
+    let after = m.map(&face_from(biased));
+    assert_abs_diff_eq!(get(&after, "BrowUpLeft"), 0.0, epsilon = 1e-4);
+    assert_abs_diff_eq!(get(&after, "BrowUpRight"), 0.0, epsilon = 1e-4);
+    assert_abs_diff_eq!(get(&after, "MouthSmile"), 0.0, epsilon = 1e-4);
+}
+
+#[test]
+fn calibrate_then_further_movement_still_reads_positive() {
+    let biased = biased_neutral_points();
+    let mut m = Mapper::new();
+    let samples: Vec<FaceLandmarks> = (0..5).map(|_| face_from(biased.clone())).collect();
+    m.calibrate(&samples);
+
+    // Raise both brows further from the *new* (biased) baseline.
+    let mut raised = biased.clone();
+    for lm in &mut raised[17..=26] {
+        lm.y -= 6.0;
+    }
+    let raised_out = m.map(&face_from(raised));
+    assert!(
+        get(&raised_out, "BrowUpLeft") > 0.3,
+        "got {}",
+        get(&raised_out, "BrowUpLeft")
+    );
+    assert!(
+        get(&raised_out, "BrowUpRight") > 0.3,
+        "got {}",
+        get(&raised_out, "BrowUpRight")
+    );
+}
+
+#[test]
+fn calibrate_with_no_usable_samples_is_a_noop() {
+    let degenerate = vec![
+        Landmark {
+            x: 5.0,
+            y: 5.0,
+            score: 1.0,
+        };
+        NUM_LANDMARKS
+    ];
+
+    let mut m1 = Mapper::new();
+    let before = m1.map(&neutral_face());
+
+    let mut m2 = Mapper::new();
+    m2.calibrate(&[face_from(degenerate)]);
+    let after = m2.map(&neutral_face());
+
+    for name in ["BrowUpLeft", "BrowUpRight", "MouthSmile", "MouthOpen"] {
+        assert_abs_diff_eq!(get(&before, name), get(&after, name), epsilon = 1e-6);
+    }
 }

@@ -72,4 +72,28 @@ impl Pipeline {
     pub fn resolution(&self) -> (u32, u32) {
         self.camera.resolution()
     }
+
+    /// Capture and track `frames` iterations to calibrate the mapper's
+    /// neutral-pose baselines (issue #15), assuming the subject holds a
+    /// relaxed, forward-facing expression throughout. Frames where no face is
+    /// tracked are skipped. Sends no OSC — this runs before normal operation.
+    ///
+    /// Returns the number of usable samples fed to [`Mapper::calibrate`] (0 if
+    /// no tracker is attached, or no frame ever found a face — the caller
+    /// decides how to report that; the mapper's prior config, whatever it
+    /// was, is left untouched in that case).
+    pub fn calibrate_neutral(&mut self, frames: u32) -> Result<usize> {
+        let Some(tracker) = self.tracker.as_mut() else {
+            return Ok(0);
+        };
+        let mut samples = Vec::new();
+        for _ in 0..frames {
+            let frame = self.camera.next_frame()?;
+            if let Some(landmarks) = tracker.track(&frame)? {
+                samples.push(landmarks);
+            }
+        }
+        self.mapper.calibrate(&samples);
+        Ok(samples.len())
+    }
 }

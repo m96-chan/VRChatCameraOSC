@@ -102,7 +102,7 @@ fn pipeline_wires_capture_to_osc() {
     let outcome = pipeline.step().unwrap();
     assert_eq!(outcome.frame_size, (320, 240));
     assert!(outcome.landmarks.is_some());
-    assert_eq!(outcome.params.len(), 7, "seven avatar params expected");
+    assert_eq!(outcome.params.len(), 10, "ten avatar params expected");
     for p in &outcome.params {
         match p.value {
             vrchat_camera_osc::osc::OscValue::Float(v) => assert!(v.is_finite()),
@@ -116,7 +116,7 @@ fn pipeline_wires_capture_to_osc() {
         pipeline.step().unwrap();
     }
     let total = recorded.lock().unwrap().len();
-    assert_eq!(total, 7 * 4, "4 frames x 7 params recorded by the sink");
+    assert_eq!(total, 10 * 4, "4 frames x 10 params recorded by the sink");
 }
 
 #[test]
@@ -132,5 +132,76 @@ fn pipeline_without_tracker_sends_nothing() {
     let outcome = pipeline.step().unwrap();
     assert!(outcome.params.is_empty());
     assert!(outcome.landmarks.is_none());
+    assert_eq!(recorded.lock().unwrap().len(), 0);
+}
+
+/// A tracker that reports no face on its first `misses` calls, then the
+/// wrapped face forever after — exercises calibration skipping unusable frames.
+struct FlakyTracker {
+    misses_left: u32,
+    face: FaceLandmarks,
+}
+impl FaceTracker for FlakyTracker {
+    fn track(&mut self, _frame: &Frame) -> anyhow::Result<Option<FaceLandmarks>> {
+        if self.misses_left > 0 {
+            self.misses_left -= 1;
+            Ok(None)
+        } else {
+            Ok(Some(self.face.clone()))
+        }
+    }
+}
+
+#[test]
+fn calibrate_neutral_collects_samples_and_sends_no_osc() {
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let sink = RecordingSink(recorded.clone());
+    let mut pipeline = Pipeline::new(
+        Box::new(FakeCamera::new(320, 240)),
+        Some(Box::new(StubTracker(neutral_face()))),
+        Mapper::new(),
+        Box::new(sink),
+    );
+
+    let n = pipeline.calibrate_neutral(5).unwrap();
+    assert_eq!(n, 5, "every frame found a face");
+    assert_eq!(
+        recorded.lock().unwrap().len(),
+        0,
+        "calibration must not send OSC"
+    );
+}
+
+#[test]
+fn calibrate_neutral_skips_frames_with_no_face() {
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let sink = RecordingSink(recorded.clone());
+    let mut pipeline = Pipeline::new(
+        Box::new(FakeCamera::new(320, 240)),
+        Some(Box::new(FlakyTracker {
+            misses_left: 3,
+            face: neutral_face(),
+        })),
+        Mapper::new(),
+        Box::new(sink),
+    );
+
+    // 3 misses + 4 hits out of 7 frames.
+    let n = pipeline.calibrate_neutral(7).unwrap();
+    assert_eq!(n, 4);
+}
+
+#[test]
+fn calibrate_neutral_without_tracker_is_a_harmless_noop() {
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let sink = RecordingSink(recorded.clone());
+    let mut pipeline = Pipeline::new(
+        Box::new(FakeCamera::new(64, 48)),
+        None,
+        Mapper::new(),
+        Box::new(sink),
+    );
+    let n = pipeline.calibrate_neutral(5).unwrap();
+    assert_eq!(n, 0);
     assert_eq!(recorded.lock().unwrap().len(), 0);
 }

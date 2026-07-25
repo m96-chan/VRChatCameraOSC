@@ -18,10 +18,19 @@
 //! | `MouthOpen`    | `0..1`  | inner lips 62↔66, mouth width 60↔64  | `gap/width`, rescaled by [`MappingConfig::mouth_open_max`] |
 //! | `EyeBlinkRight`| `0..1`  | right eye 36–41                      | `1 − EAR/ear_open` (1 = closed) |
 //! | `EyeBlinkLeft` | `0..1`  | left eye 42–47                       | `1 − EAR/ear_open` (1 = closed) |
-//! | `BrowUp`       | `0..1`  | brows 17–26 vs eye centres           | `(d/IOD − brow_neutral)/brow_span` |
+//! | `BrowUpRight`  | `0..1`  | right brow 17–21 vs right eye centre | `(d/IOD − brow_neutral)/brow_span` |
+//! | `BrowUpLeft`   | `0..1`  | left brow 22–26 vs left eye centre   | `(d/IOD − brow_neutral)/brow_span` |
+//! | `MouthSmile`   | `0..1`  | corners 48,54 vs mouth centre 51,57  | corner vertical lift / IOD, rescaled by [`MappingConfig::mouth_smile_span`] |
+//! | `MouthWide`    | `-1..1` | corners 48↔54                        | `(width/IOD − mouth_width_neutral)/mouth_width_span`; + stretched, − puckered |
 //! | `HeadRoll`     | `-1..1` | eye centres (36–41 vs 42–47)         | `atan2(dy,dx)/roll_max_rad` |
 //! | `HeadYaw`      | `-1..1` | nose tip 30 vs eye midpoint          | `(tip.x − midx)/(IOD·yaw_half_span)` |
 //! | `HeadPitch`    | `-1..1` | nose bridge 27→30 vs IOD             | `(len/IOD − pitch_neutral)/pitch_span` |
+//!
+//! `MouthSmile` and `MouthWide` are deliberately distinct signals from the same
+//! two corner landmarks: smile is the *vertical* lift of the corners relative to
+//! the mouth centre (a curved smile), width is the *horizontal* corner distance
+//! (stretch vs. pucker) — geometrically orthogonal, so a wide-but-flat mouth and
+//! a small closed-lip smile read differently.
 //!
 //! **Eye-aspect-ratio (EAR).** Using the standard six-point EAR on each eye,
 //! `EAR = (|p2−p6| + |p3−p5|) / (2·|p1−p4|)`. For the right eye the points are
@@ -54,27 +63,45 @@
 //! `0`, so the first frame of a step input lands between `0` and the target and
 //! successive identical frames converge toward it. Because `prev` and every raw
 //! value lie inside the parameter range, the smoothed output does too.
+//!
+//! # Neutral-pose calibration (issue #15)
+//!
+//! The "neutral" reference ratios above (`brow_neutral_*`, `mouth_smile_neutral`,
+//! `mouth_width_neutral`, `pitch_neutral`, `ear_open`) default to values
+//! calibrated against a synthetic test face; real faces/cameras sit at a
+//! different baseline, which left some parameters permanently clamped to `0`
+//! despite genuinely moving. [`Mapper::calibrate`] re-derives these from a
+//! batch of real landmark samples captured while the subject holds a relaxed,
+//! forward-facing expression — see its doc for details. `mouth_open_max` is a
+//! *span* (how open counts as "fully open"), not a neutral baseline, and is
+//! deliberately left untouched by calibration.
 
 use crate::osc::OscParam;
 use crate::tracking::{FaceLandmarks, Landmark};
 
 /// Output parameter names, in a stable emission order.
-const PARAM_NAMES: [&str; 7] = [
+const PARAM_NAMES: [&str; 10] = [
     "MouthOpen",
     "EyeBlinkLeft",
     "EyeBlinkRight",
-    "BrowUp",
+    "BrowUpLeft",
+    "BrowUpRight",
+    "MouthSmile",
+    "MouthWide",
     "HeadRoll",
     "HeadYaw",
     "HeadPitch",
 ];
 
 /// Per-parameter output range `(min, max)`, aligned with [`PARAM_NAMES`].
-const PARAM_RANGES: [(f32, f32); 7] = [
+const PARAM_RANGES: [(f32, f32); 10] = [
     (0.0, 1.0),  // MouthOpen
     (0.0, 1.0),  // EyeBlinkLeft
     (0.0, 1.0),  // EyeBlinkRight
-    (0.0, 1.0),  // BrowUp
+    (0.0, 1.0),  // BrowUpLeft
+    (0.0, 1.0),  // BrowUpRight
+    (0.0, 1.0),  // MouthSmile
+    (-1.0, 1.0), // MouthWide
     (-1.0, 1.0), // HeadRoll
     (-1.0, 1.0), // HeadYaw
     (-1.0, 1.0), // HeadPitch
@@ -93,10 +120,20 @@ pub struct MappingConfig {
     pub mouth_open_max: f32,
     /// Eye-aspect-ratio of a fully-open eye (`EyeBlink = 0`).
     pub ear_open: f32,
-    /// Neutral brow-to-eye distance as a fraction of IOD (`BrowUp = 0`).
-    pub brow_neutral: f32,
+    /// Neutral right-brow-to-eye distance as a fraction of IOD (`BrowUpRight = 0`).
+    pub brow_neutral_right: f32,
+    /// Neutral left-brow-to-eye distance as a fraction of IOD (`BrowUpLeft = 0`).
+    pub brow_neutral_left: f32,
     /// Extra brow-to-eye/IOD fraction that spans neutral → fully raised.
     pub brow_span: f32,
+    /// Neutral corner-lift/IOD ratio (`MouthSmile = 0`).
+    pub mouth_smile_neutral: f32,
+    /// Corner-lift/IOD fraction that spans neutral → a full smile (`MouthSmile = 1`).
+    pub mouth_smile_span: f32,
+    /// Neutral mouth-corner-width/IOD ratio (`MouthWide = 0`).
+    pub mouth_width_neutral: f32,
+    /// Corner-width/IOD fraction spanning neutral → `±1` (stretched/puckered).
+    pub mouth_width_span: f32,
     /// Roll angle (radians) mapped to `±1`.
     pub roll_max_rad: f32,
     /// Nose-tip horizontal offset that saturates yaw, as a fraction of IOD.
@@ -113,8 +150,13 @@ impl Default for MappingConfig {
             smoothing: 1.0,
             mouth_open_max: 0.5,
             ear_open: 0.3,
-            brow_neutral: 0.5,
+            brow_neutral_right: 0.5,
+            brow_neutral_left: 0.5,
             brow_span: 0.2,
+            mouth_smile_neutral: 0.0,
+            mouth_smile_span: 0.15,
+            mouth_width_neutral: 0.6,
+            mouth_width_span: 0.3,
             roll_max_rad: 0.6,
             yaw_half_span: 0.5,
             pitch_neutral: 0.45,
@@ -128,7 +170,7 @@ impl Default for MappingConfig {
 pub struct Mapper {
     config: MappingConfig,
     /// Previously emitted (smoothed) value per parameter; starts at all-zero.
-    prev: [f32; 7],
+    prev: [f32; 10],
 }
 
 impl Default for Mapper {
@@ -157,13 +199,16 @@ impl Mapper {
     pub fn with_config(config: MappingConfig) -> Self {
         Self {
             config,
-            prev: [0.0; 7],
+            prev: [0.0; 10],
         }
     }
 
     /// Produce the OSC parameter updates for one frame of landmarks.
     pub fn map(&mut self, landmarks: &FaceLandmarks) -> Vec<OscParam> {
         let raw = self.raw_params(&landmarks.points);
+        if std::env::var_os("DEBUG_MAPPING").is_some() {
+            eprintln!("[DEBUG_MAPPING] raw = {raw:?}");
+        }
         let alpha = self.config.smoothing.clamp(f32::MIN_POSITIVE, 1.0);
 
         let mut out = Vec::with_capacity(PARAM_NAMES.len());
@@ -178,7 +223,7 @@ impl Mapper {
     }
 
     /// Compute the raw (unsmoothed, unclamped) parameter values from landmarks.
-    fn raw_params(&self, p: &[Landmark]) -> [f32; 7] {
+    fn raw_params(&self, p: &[Landmark]) -> [f32; 10] {
         let cfg = &self.config;
 
         let right_eye = centroid(p, &[36, 37, 38, 39, 40, 41]);
@@ -187,10 +232,12 @@ impl Mapper {
 
         // Degenerate geometry (no detectable face scale): emit resting values.
         if iod < EPS {
-            return [0.0; 7];
+            return [0.0; 10];
         }
 
-        // MouthOpen: inner-lip gap over mouth width.
+        // MouthOpen: inner-lip gap over mouth width. Self-normalising (a
+        // closed mouth has ~zero gap regardless of who's wearing it), so this
+        // is the one ratio calibration deliberately leaves alone.
         let mouth_width = dist(pt(p, 60), pt(p, 64));
         let mouth_open = if mouth_width < EPS {
             0.0
@@ -199,15 +246,15 @@ impl Mapper {
             (gap / mouth_width) / cfg.mouth_open_max
         };
 
-        // Eye blink from EAR, inverted so 1 = closed.
-        let blink_right = blink(ear(p, [36, 37, 38, 39, 40, 41]), cfg.ear_open);
-        let blink_left = blink(ear(p, [42, 43, 44, 45, 46, 47]), cfg.ear_open);
+        let g = GeometryRatios::measure(p, right_eye, left_eye, iod);
 
-        // BrowUp: brow-to-eye vertical distance (fraction of IOD) vs neutral.
-        let brow_y = mean_y(p, 17..=26);
-        let eye_y = (right_eye.1 + left_eye.1) / 2.0;
-        let brow_ratio = (eye_y - brow_y) / iod;
-        let brow_up = (brow_ratio - cfg.brow_neutral) / cfg.brow_span;
+        let blink_right = blink(g.ear_right, cfg.ear_open);
+        let blink_left = blink(g.ear_left, cfg.ear_open);
+        let brow_up_right = (g.brow_ratio_right - cfg.brow_neutral_right) / cfg.brow_span;
+        let brow_up_left = (g.brow_ratio_left - cfg.brow_neutral_left) / cfg.brow_span;
+        let mouth_smile =
+            (g.mouth_smile_lift_ratio - cfg.mouth_smile_neutral) / cfg.mouth_smile_span;
+        let mouth_wide = (g.mouth_width_ratio - cfg.mouth_width_neutral) / cfg.mouth_width_span;
 
         // HeadRoll: tilt angle of the right→left eye-centre line.
         let dx = left_eye.0 - right_eye.0;
@@ -218,19 +265,153 @@ impl Mapper {
         let mid_x = (right_eye.0 + left_eye.0) / 2.0;
         let head_yaw = (pt(p, 30).0 - mid_x) / (iod * cfg.yaw_half_span);
 
-        // HeadPitch: nose-bridge length (27→30) vs IOD, relative to neutral.
-        let bridge = dist(pt(p, 27), pt(p, 30));
-        let head_pitch = (bridge / iod - cfg.pitch_neutral) / cfg.pitch_span;
+        let head_pitch = (g.pitch_ratio - cfg.pitch_neutral) / cfg.pitch_span;
 
         [
             mouth_open,
             blink_left,
             blink_right,
-            brow_up,
+            brow_up_left,
+            brow_up_right,
+            mouth_smile,
+            mouth_wide,
             head_roll,
             head_yaw,
             head_pitch,
         ]
+    }
+
+    /// Re-derive the neutral-pose baselines from a batch of real landmark
+    /// samples, captured while the subject holds a relaxed, forward-facing
+    /// expression (issue #15).
+    ///
+    /// The defaults in [`MappingConfig`] are calibrated against a synthetic
+    /// test face; real faces and camera angles sit at a different baseline
+    /// ratio, which can leave a parameter permanently clamped at one end of
+    /// its range even while it's genuinely responding to expression changes.
+    /// This averages the *raw geometry ratios* (the same ones [`Mapper::map`]
+    /// subtracts a neutral from) across every sample with a detectable face
+    /// and overwrites `ear_open`, `brow_neutral_left`/`brow_neutral_right`,
+    /// `mouth_smile_neutral`, `mouth_width_neutral`, and `pitch_neutral`.
+    /// `mouth_open_max` is a span, not a baseline, and is left untouched.
+    ///
+    /// Samples with no detectable face scale are skipped; if none are usable
+    /// this does nothing (existing config, whatever it was, is kept). Resets
+    /// the smoothing state, since the neutral point just moved.
+    pub fn calibrate(&mut self, samples: &[FaceLandmarks]) {
+        let (mut sum, mut n) = (GeometryRatios::zero(), 0u32);
+        for lm in samples {
+            let p = &lm.points;
+            let right_eye = centroid(p, &[36, 37, 38, 39, 40, 41]);
+            let left_eye = centroid(p, &[42, 43, 44, 45, 46, 47]);
+            let iod = dist(right_eye, left_eye);
+            if iod < EPS {
+                continue;
+            }
+            sum = sum + GeometryRatios::measure(p, right_eye, left_eye, iod);
+            n += 1;
+        }
+        if n == 0 {
+            return;
+        }
+        let avg = sum / n as f32;
+        self.config.ear_open = (avg.ear_right + avg.ear_left) / 2.0;
+        self.config.brow_neutral_right = avg.brow_ratio_right;
+        self.config.brow_neutral_left = avg.brow_ratio_left;
+        self.config.mouth_smile_neutral = avg.mouth_smile_lift_ratio;
+        self.config.mouth_width_neutral = avg.mouth_width_ratio;
+        self.config.pitch_neutral = avg.pitch_ratio;
+        self.prev = [0.0; 10];
+    }
+}
+
+/// Raw (pre-neutral-subtraction) geometry ratios, shared by `raw_params`
+/// (which subtracts the configured neutral) and `calibrate` (which averages
+/// these directly to *become* the new neutral) so the two stay in sync.
+#[derive(Debug, Clone, Copy)]
+struct GeometryRatios {
+    ear_right: f32,
+    ear_left: f32,
+    brow_ratio_right: f32,
+    brow_ratio_left: f32,
+    mouth_smile_lift_ratio: f32,
+    mouth_width_ratio: f32,
+    pitch_ratio: f32,
+}
+
+impl GeometryRatios {
+    fn zero() -> Self {
+        Self {
+            ear_right: 0.0,
+            ear_left: 0.0,
+            brow_ratio_right: 0.0,
+            brow_ratio_left: 0.0,
+            mouth_smile_lift_ratio: 0.0,
+            mouth_width_ratio: 0.0,
+            pitch_ratio: 0.0,
+        }
+    }
+
+    /// Measure every neutral-relative ratio from one frame's landmarks.
+    /// `iod` must already be checked non-degenerate (`>= EPS`) by the caller.
+    fn measure(p: &[Landmark], right_eye: (f32, f32), left_eye: (f32, f32), iod: f32) -> Self {
+        let ear_right = ear(p, [36, 37, 38, 39, 40, 41]);
+        let ear_left = ear(p, [42, 43, 44, 45, 46, 47]);
+
+        let brow_y_right = mean_y(p, 17..=21);
+        let brow_y_left = mean_y(p, 22..=26);
+        let brow_ratio_right = (right_eye.1 - brow_y_right) / iod;
+        let brow_ratio_left = (left_eye.1 - brow_y_left) / iod;
+
+        // Vertical lift of corners (48,54) above the mouth centre (51,57), and
+        // their horizontal distance — see the module doc for why these two
+        // are deliberately separate signals.
+        let mouth_center_y = (pt(p, 51).1 + pt(p, 57).1) / 2.0;
+        let corner_avg_y = (pt(p, 48).1 + pt(p, 54).1) / 2.0;
+        let mouth_smile_lift_ratio = (mouth_center_y - corner_avg_y) / iod;
+        let mouth_width_ratio = dist(pt(p, 48), pt(p, 54)) / iod;
+
+        let pitch_ratio = dist(pt(p, 27), pt(p, 30)) / iod;
+
+        Self {
+            ear_right,
+            ear_left,
+            brow_ratio_right,
+            brow_ratio_left,
+            mouth_smile_lift_ratio,
+            mouth_width_ratio,
+            pitch_ratio,
+        }
+    }
+}
+
+impl std::ops::Add for GeometryRatios {
+    type Output = Self;
+    fn add(self, rhs: Self) -> Self {
+        Self {
+            ear_right: self.ear_right + rhs.ear_right,
+            ear_left: self.ear_left + rhs.ear_left,
+            brow_ratio_right: self.brow_ratio_right + rhs.brow_ratio_right,
+            brow_ratio_left: self.brow_ratio_left + rhs.brow_ratio_left,
+            mouth_smile_lift_ratio: self.mouth_smile_lift_ratio + rhs.mouth_smile_lift_ratio,
+            mouth_width_ratio: self.mouth_width_ratio + rhs.mouth_width_ratio,
+            pitch_ratio: self.pitch_ratio + rhs.pitch_ratio,
+        }
+    }
+}
+
+impl std::ops::Div<f32> for GeometryRatios {
+    type Output = Self;
+    fn div(self, rhs: f32) -> Self {
+        Self {
+            ear_right: self.ear_right / rhs,
+            ear_left: self.ear_left / rhs,
+            brow_ratio_right: self.brow_ratio_right / rhs,
+            brow_ratio_left: self.brow_ratio_left / rhs,
+            mouth_smile_lift_ratio: self.mouth_smile_lift_ratio / rhs,
+            mouth_width_ratio: self.mouth_width_ratio / rhs,
+            pitch_ratio: self.pitch_ratio / rhs,
+        }
     }
 }
 

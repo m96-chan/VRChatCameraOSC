@@ -141,8 +141,8 @@ fn render_config(frame: &mut Frame, area: Rect, state: &UiState) {
 }
 
 fn render_footer(frame: &mut Frame, area: Rect) {
-    let hint =
-        Paragraph::new("Tab: switch  d: dry-run  ?: help  q: quit").alignment(Alignment::Center);
+    let hint = Paragraph::new("Tab: switch  d: dry-run  c: recalibrate  ?: help  q: quit")
+        .alignment(Alignment::Center);
     frame.render_widget(hint, area);
 }
 
@@ -156,6 +156,7 @@ fn render_help(frame: &mut Frame, area: Rect) {
         Line::from("BackTab / Left  previous panel"),
         Line::from("Up / Down       move config cursor"),
         Line::from("d               toggle dry-run"),
+        Line::from("c               recalibrate neutral pose"),
         Line::from("type            edit selected config field"),
         Line::from("Backspace       erase in field"),
         Line::from("?               toggle this help"),
