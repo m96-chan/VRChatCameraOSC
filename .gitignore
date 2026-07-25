@@ -10,3 +10,6 @@ __pycache__/
 # Generated model weights / fixtures are downloaded, not committed (see reference/README.md)
 /models/*.safetensors
 /models/*.pth
+
+# Agent worktrees
+/.claude/worktrees/
