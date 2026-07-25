@@ -94,6 +94,67 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         }
 
         [Test]
+        public void AddHeadPoseLayer_RestrictsToHeadOnlyMask_ToStopChestBonePerturbationLeaking()
+        {
+            // Real bug (issue #16): Humanoid retargeting can leak tiny
+            // perturbations into Chest/Spine from a Head-only muscle clip,
+            // which a chest-mounted VRCPhysBone (e.g. wings) can amplify into
+            // a visible spin under real (continuous, jittery) OSC head data
+            // even though a single static parameter scrub looks harmless.
+            // The mask must contain the layer's effect to Head only.
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadRoll", "Head Tilt Left-Right");
+
+            var layer = _controller.layers.First(l => l.name == "OSC_HeadRoll");
+            Assert.IsNotNull(layer.avatarMask, "head-pose layer must have a mask");
+            Assert.IsTrue(layer.avatarMask.GetHumanoidBodyPartActive(AvatarMaskBodyPart.Head));
+            Assert.IsFalse(layer.avatarMask.GetHumanoidBodyPartActive(AvatarMaskBodyPart.Body));
+            Assert.IsFalse(layer.avatarMask.GetHumanoidBodyPartActive(AvatarMaskBodyPart.LeftArm));
+            Assert.IsFalse(layer.avatarMask.GetHumanoidBodyPartActive(AvatarMaskBodyPart.RightArm));
+            Assert.IsFalse(layer.avatarMask.GetHumanoidBodyPartActive(AvatarMaskBodyPart.LeftLeg));
+            Assert.IsFalse(layer.avatarMask.GetHumanoidBodyPartActive(AvatarMaskBodyPart.RightLeg));
+        }
+
+        [Test]
+        public void AddHeadPoseLayer_SharesOneMaskAcrossAllThreeAxes()
+        {
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadRoll", "Head Tilt Left-Right");
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadYaw", "Head Turn Left-Right");
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadPitch", "Head Nod Down-Up");
+
+            var masks = _controller.layers
+                .Where(l => l.name.StartsWith("OSC_Head"))
+                .Select(l => l.avatarMask)
+                .ToArray();
+            Assert.AreEqual(3, masks.Length);
+            Assert.AreSame(masks[0], masks[1]);
+            Assert.AreSame(masks[1], masks[2]);
+        }
+
+        [Test]
+        public void RemoveLayer_KeepsSharedMask_WhileOtherHeadLayersStillUseIt()
+        {
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadRoll", "Head Tilt Left-Right");
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadYaw", "Head Turn Left-Right");
+
+            OscAnimatorLayerBuilder.RemoveLayer(_controller, "HeadRoll");
+
+            var remaining = _controller.layers.First(l => l.name == "OSC_HeadYaw");
+            Assert.IsNotNull(remaining.avatarMask, "surviving layer's mask must not have been destroyed");
+        }
+
+        [Test]
+        public void RemoveLayer_CleansUpSharedMask_OnceNoLayerReferencesIt()
+        {
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadRoll", "Head Tilt Left-Right");
+            OscAnimatorLayerBuilder.RemoveLayer(_controller, "HeadRoll");
+
+            var maskStillInAsset = AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(_controller))
+                .OfType<AvatarMask>()
+                .Any(m => m.name == "OSC_HeadOnlyMask");
+            Assert.IsFalse(maskStillInAsset, "orphaned mask sub-asset must be cleaned up");
+        }
+
+        [Test]
         public void RemoveLayer_IsTheInverseOfAdd_LeavesOtherLayersAlone()
         {
             OscAnimatorLayerBuilder.AddBlendShapeLayer(_controller, _avatarRoot.transform, "MouthOpen", _renderer, "Smile");

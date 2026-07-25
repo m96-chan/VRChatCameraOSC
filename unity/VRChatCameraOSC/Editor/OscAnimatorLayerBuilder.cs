@@ -87,7 +87,40 @@ namespace VRChatCameraOsc.AvatarSetup
             tree.AddChild(MuscleClip(controller, paramName, muscleName, -1f), -1f);
             tree.AddChild(MuscleClip(controller, paramName, muscleName, 0f), 0f);
             tree.AddChild(MuscleClip(controller, paramName, muscleName, 1f), 1f);
-            AddLayer(controller, paramName, tree, AnimatorLayerBlendingMode.Additive, null);
+            AddLayer(controller, paramName, tree, AnimatorLayerBlendingMode.Additive, GetOrCreateHeadOnlyMask(controller));
+        }
+
+        /// <summary>
+        /// A shared <see cref="AvatarMask"/>, restricted to only the Head
+        /// humanoid body part, reused across all three head-pose layers.
+        ///
+        /// Without this, a real bug: Unity's Humanoid retargeting solver can
+        /// leak tiny perturbations into Chest/Spine even when a clip only
+        /// contains Head muscle curves, invisible in a single static
+        /// parameter scrub but enough — at the continuous, jittery rate real
+        /// OSC head-tracking updates at — to kick a chest-mounted VRCPhysBone
+        /// (e.g. wings) into a runaway spin. The mask contains the additive
+        /// layer's *written* effect to Head only, regardless of what the
+        /// solver computes internally for other bones.
+        /// </summary>
+        static AvatarMask GetOrCreateHeadOnlyMask(AnimatorController controller)
+        {
+            const string maskName = "OSC_HeadOnlyMask";
+            var existing = AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(controller))
+                .OfType<AvatarMask>()
+                .FirstOrDefault(m => m.name == maskName);
+            if (existing != null)
+            {
+                return existing;
+            }
+
+            var mask = new AvatarMask { name = maskName };
+            for (var part = AvatarMaskBodyPart.Root; part < AvatarMaskBodyPart.LastBodyPart; part++)
+            {
+                mask.SetHumanoidBodyPartActive(part, part == AvatarMaskBodyPart.Head);
+            }
+            AssetDatabase.AddObjectToAsset(mask, controller);
+            return mask;
         }
 
         /// <summary>Whether an <c>OSC_&lt;paramName&gt;</c> layer currently exists — the
@@ -126,6 +159,14 @@ namespace VRChatCameraOsc.AvatarSetup
                 }
                 AssetDatabase.RemoveObjectFromAsset(layer.stateMachine);
                 Object.DestroyImmediate(layer.stateMachine, true);
+            }
+
+            // The head-only mask is shared across all 3 head-pose layers —
+            // only destroy it once no remaining layer references it.
+            if (layer.avatarMask != null && !layers.Any(l => l.avatarMask == layer.avatarMask))
+            {
+                AssetDatabase.RemoveObjectFromAsset(layer.avatarMask);
+                Object.DestroyImmediate(layer.avatarMask, true);
             }
 
             controller.parameters = controller.parameters.Where(p => p.name != paramName).ToArray();
