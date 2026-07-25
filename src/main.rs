@@ -27,12 +27,16 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use vrchat_camera_osc::capture::{CameraSource, FakeCamera, FpsCounter};
-use vrchat_camera_osc::config::Config;
+use vrchat_camera_osc::config::{Config, TrackingBackend};
+use vrchat_camera_osc::mapping::arkit::{ArkitMapper, ArkitMappingConfig};
 use vrchat_camera_osc::mapping::Mapper;
+use vrchat_camera_osc::models;
 use vrchat_camera_osc::osc::{MonitorSink, OscSink, UdpOscSender};
 use vrchat_camera_osc::pipeline::Pipeline;
+use vrchat_camera_osc::tracking::arkit::ArkitFaceTracker;
 use vrchat_camera_osc::tracking::detect::sfd::SfdDetector;
 use vrchat_camera_osc::tracking::fan::FanTracker;
+use vrchat_camera_osc::tracking::mediapipe::MediapipeTracker;
 use vrchat_camera_osc::tracking::FaceTracker;
 use vrchat_camera_osc::tui::{render, UiState};
 
@@ -71,6 +75,8 @@ struct Args {
     detector: PathBuf,
     detect_interval: u32,
     calibrate_frames: u32,
+    /// CLI override for `tracking.backend` (`--backend mediapipe|fan`).
+    backend: Option<TrackingBackend>,
 }
 
 fn parse_args() -> Args {
@@ -82,6 +88,7 @@ fn parse_args() -> Args {
         detector: default_detector_path(),
         detect_interval: DEFAULT_DETECT_INTERVAL,
         calibrate_frames: DEFAULT_CALIBRATE_FRAMES,
+        backend: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -109,9 +116,17 @@ fn parse_args() -> Args {
                     a.calibrate_frames = n;
                 }
             }
+            "--backend" => match it.next().as_deref() {
+                Some("mediapipe") => a.backend = Some(TrackingBackend::Mediapipe),
+                Some("fan") => a.backend = Some(TrackingBackend::Fan),
+                other => eprintln!(
+                    "--backend expects 'mediapipe' or 'fan' (got {other:?}) — using config"
+                ),
+            },
             "-h" | "--help" => {
                 println!(
                     "vrchat-camera-osc [--monitor] [--fake] [--frames N] \
+                     [--backend mediapipe|fan] \
                      [--weights FAN.safetensors] [--detector S3FD.safetensors] \
                      [--detect-interval N] [--calibrate-frames N]"
                 );
@@ -225,6 +240,42 @@ fn build_tracker(
     Some(Box::new(tracker))
 }
 
+/// Build the MediaPipe (ARKit-blendshape) tracker — issue #17. Auto-downloads
+/// the three ONNX models on first run, mirroring [`build_tracker`]'s handling
+/// of the FAN/S3FD weights.
+fn build_arkit_tracker(detect_interval: u32) -> Option<Box<dyn ArkitFaceTracker>> {
+    let detection = models::default_face_detection_path();
+    let landmarks = models::default_face_landmarks_path();
+    let blendshapes = models::default_face_blendshapes_path();
+    ensure_default_model_present(
+        &detection,
+        &detection.clone(),
+        models::FACE_DETECTION_MODEL_URL,
+    );
+    ensure_default_model_present(
+        &landmarks,
+        &landmarks.clone(),
+        models::FACE_LANDMARKS_MODEL_URL,
+    );
+    ensure_default_model_present(
+        &blendshapes,
+        &blendshapes.clone(),
+        models::FACE_BLENDSHAPES_MODEL_URL,
+    );
+
+    match MediapipeTracker::from_paths(&detection, &landmarks, &blendshapes) {
+        Ok(t) => Some(Box::new(t.with_detect_interval(detect_interval))),
+        Err(e) => {
+            eprintln!(
+                "failed to load the MediaPipe face stack: {e:#}\n\
+                 The loop still runs; it just won't emit parameters. \
+                 (Try `--backend fan` for the FAN fallback.)"
+            );
+            None
+        }
+    }
+}
+
 fn main() -> Result<()> {
     let args = parse_args();
 
@@ -234,11 +285,21 @@ fn main() -> Result<()> {
     });
     cfg.validate()?;
 
+    let backend = args.backend.unwrap_or(cfg.tracking.backend);
     let camera = build_camera(&cfg, args.fake);
-    let tracker = build_tracker(&args.weights, &args.detector, args.detect_interval);
-    let mapper = Mapper::with_smoothing(cfg.tracking.smoothing);
     let sink = build_sink(&cfg)?;
-    let mut pipeline = Pipeline::new(camera, tracker, mapper, sink);
+    let mut pipeline = match backend {
+        TrackingBackend::Mediapipe => {
+            let tracker = build_arkit_tracker(args.detect_interval);
+            let mapper = ArkitMapper::new(ArkitMappingConfig::default());
+            Pipeline::new_arkit(camera, tracker, mapper, sink)
+        }
+        TrackingBackend::Fan => {
+            let tracker = build_tracker(&args.weights, &args.detector, args.detect_interval);
+            let mapper = Mapper::with_smoothing(cfg.tracking.smoothing);
+            Pipeline::new(camera, tracker, mapper, sink)
+        }
+    };
 
     calibrate_neutral(&mut pipeline, args.calibrate_frames);
 

@@ -15,9 +15,16 @@ rosc = "0.11"
 image = "0.25"
 parking_lot = "0.12"
 
-# Inference (pure-Rust) — FAN face-alignment network ported to candle.
-candle-core = "0.11"
-candle-nn = "0.11"
+# Inference (pure-Rust) — FAN face-alignment network and the MediaPipe
+# YuNet/FaceMesh V2/Blendshape V2 ONNX stack (issue #17), both ported to
+# candle. Pinned to the `m96-chan/candle` fork (`avatacam` branch): upstream
+# master plus the ONNX ops (`Reciprocal`, `ReduceSum` attr-axes, `Resize`
+# linear, `Pad` constant, `DepthToSpace`) the MediaPipe graphs need. A single
+# candle-core version across the whole project avoids two incompatible copies
+# of its types.
+candle-core = { git = "https://github.com/m96-chan/candle", branch = "avatacam" }
+candle-nn = { git = "https://github.com/m96-chan/candle", branch = "avatacam" }
+candle-onnx = { git = "https://github.com/m96-chan/candle", branch = "avatacam" }
 safetensors = "0.8"
 
 # One-time model-weight download (issue #12): blocking GET + TLS + redirects,

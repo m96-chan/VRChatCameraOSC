@@ -51,5 +51,7 @@ pub trait FaceTracker {
     fn track(&mut self, frame: &Frame) -> Result<Option<FaceLandmarks>>;
 }
 
+pub mod arkit;
 pub mod detect;
 pub mod fan;
+pub mod mediapipe;

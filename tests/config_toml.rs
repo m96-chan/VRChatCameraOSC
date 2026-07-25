@@ -255,3 +255,28 @@ fn default_path_respects_env() {
         None => std::env::remove_var("HOME"),
     }
 }
+
+#[test]
+fn tracking_backend_defaults_to_mediapipe() {
+    use vrchat_camera_osc::config::TrackingBackend;
+    assert_eq!(
+        Config::default().tracking.backend,
+        TrackingBackend::Mediapipe
+    );
+    // A config file written before the backend field existed still loads.
+    let cfg: Config = toml::from_str("[tracking]\nsmoothing = 0.5\n").unwrap();
+    assert_eq!(cfg.tracking.backend, TrackingBackend::Mediapipe);
+}
+
+#[test]
+fn tracking_backend_fan_is_selectable() {
+    use vrchat_camera_osc::config::TrackingBackend;
+    let cfg: Config = toml::from_str("[tracking]\nbackend = \"fan\"\n").unwrap();
+    assert_eq!(cfg.tracking.backend, TrackingBackend::Fan);
+    // And it round-trips through save/load.
+    let dir = TempDir::new("backend-roundtrip");
+    let path = dir.join("config.toml");
+    cfg.save(&path).unwrap();
+    let loaded = Config::load(&path).unwrap();
+    assert_eq!(loaded.tracking.backend, TrackingBackend::Fan);
+}

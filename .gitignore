@@ -12,6 +12,9 @@ reference/assets/
 # Generated model weights / fixtures are downloaded, not committed (see reference/README.md)
 /models/*.safetensors
 /models/*.pth
+# MediaPipe ONNX stack (issue #17): YuNet / FaceMesh V2 / Blendshape V2 —
+# also auto-downloaded, not committed (see src/models.rs).
+/models/*.onnx
 
 # Agent worktrees
 /.claude/worktrees/

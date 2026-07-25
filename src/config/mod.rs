@@ -58,7 +58,23 @@ pub struct CameraConfig {
 #[serde(default)]
 pub struct TrackingConfig {
     /// Exponential smoothing factor in 0..1 (higher = snappier, less smooth).
+    /// Only used by the `fan` backend; `mediapipe` has its own One-Euro
+    /// smoothing tuned per channel.
     pub smoothing: f32,
+    /// Which face-tracking backend drives the pipeline (issue #17).
+    pub backend: TrackingBackend,
+}
+
+/// Face-tracking backend selection (issue #17). `mediapipe` (default) is the
+/// AvataCam-ported YuNet + FaceMesh V2 + Blendshape V2 stack; `fan` is the
+/// original S3FD + FAN 68-landmark geometric pipeline, kept selectable per
+/// the "models are pluggable" principle.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TrackingBackend {
+    #[default]
+    Mediapipe,
+    Fan,
 }
 
 impl Default for OscConfig {
@@ -83,7 +99,10 @@ impl Default for CameraConfig {
 
 impl Default for TrackingConfig {
     fn default() -> Self {
-        Self { smoothing: 0.5 }
+        Self {
+            smoothing: 0.5,
+            backend: TrackingBackend::default(),
+        }
     }
 }
 

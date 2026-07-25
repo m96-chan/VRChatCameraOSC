@@ -36,8 +36,11 @@ Realtime face tracking for VRChat, driven from your webcam and delivered over OS
 
 🚧 Early development. Interfaces and parameters are subject to change. The full
 pipeline (capture → detect → face mesh → mapping → OSC) is wired end-to-end,
-including face auto-crop (S3FD) before FAN. Model weights auto-download on
-first run. Hand/finger tracking is the main remaining gap (see Roadmap).
+with **two selectable tracking backends** (issue #17): the default
+**MediaPipe** stack (YuNet → FaceMesh V2 → Blendshape V2, ported from
+[AvataCam](https://github.com/m96-chan/AvataCam)) and the original **FAN**
+stack (S3FD → 2DFAN4). Model weights auto-download on first run. Hand/finger
+tracking is the main remaining gap (see Roadmap).
 
 ## Architecture
 
@@ -47,12 +50,26 @@ swappable:
 | Stage | Module | Notes |
 |-------|--------|-------|
 | Capture | `capture::CameraSource` | `capture::native::NativeCamera` — AVFoundation on macOS, V4L2 on Linux (`Windows` planned), via `nokhwa`; synthetic `FakeCamera` for tests/headless |
-| Detection | `tracking::detect::FaceDetector` | `sfd::SfdDetector` — the **S3FD** face detector ported to candle; auto-crops before FAN |
-| Tracking | `tracking::FaceTracker` | `fan::FanTracker` — the face-alignment **2DFAN4** net ported to pure-Rust **candle** |
-| Mapping | `mapping::Mapper` | iBUG-68 landmarks → 10 normalised avatar params (mouth open/smile/wide, per-eye blink, per-brow raise, head pose), clamped + smoothed |
+| Tracking (default) | `tracking::arkit::ArkitFaceTracker` | `mediapipe::MediapipeTracker` — **YuNet** detector → rotated eyes-aligned ROI → **FaceMesh V2** (478 3-D landmarks) → **Blendshape V2** (52 ARKit coefficients) + per-axis head rotation, on `candle-onnx` |
+| Tracking (`fan`) | `tracking::FaceTracker` | `fan::FanTracker` — the face-alignment **2DFAN4** net ported to pure-Rust **candle**, with `sfd::SfdDetector` (**S3FD**) auto-cropping first |
+| Mapping (default) | `mapping::arkit::ArkitMapper` | 52 ARKit coefficients + head pose → 10 avatar params, with per-channel neutral-baseline calibration (per-eye blink self-calibration so open→0, blink→1) and One-Euro smoothing |
+| Mapping (`fan`) | `mapping::Mapper` | iBUG-68 landmarks → the same 10 params via geometric ratios, clamped + smoothed |
 | OSC | `osc::OscSink` | `UdpOscSender` to VRChat, or `MonitorSink` dry-run |
 | Loop | `pipeline::Pipeline` | `capture → track → map → OSC`, driven by the TUI or headless monitor |
-| Models | `models::ensure_present` | auto-downloads `models/*.safetensors` from a GitHub Release on first run |
+| Models | `models::ensure_present` | auto-downloads `models/*.safetensors` / `models/*.onnx` from a GitHub Release on first run |
+
+### Why two backends?
+
+The FAN pipeline derives expressions from 68 2-D landmark *geometry* (eye
+aspect ratio etc.), which fundamentally can't do some things a dedicated
+expression network can: FAN's landmarks never fully collapse on closed eyes
+(so blink can't saturate to 1.0), and the eye aspect ratio shrinks when you
+pitch your head down (so looking down falsely reads as a blink). The
+MediaPipe Blendshape V2 model predicts `eyeBlinkLeft/Right`, `jawOpen`, etc.
+directly from a rotation-normalized face crop, which is robust to head pose —
+this is the same stack AvataCam uses, and it is the default here. FAN stays
+selectable (`--backend fan` or `backend = "fan"` under `[tracking]` in the
+config) per the "models are pluggable" principle.
 
 ### Model & PyTorch parity
 
@@ -79,9 +96,11 @@ cargo run --release
 cargo run --release -- --monitor --fake --frames 20
 ```
 
-The tracker loads FAN weights from `models/2dfan4.safetensors` and the S3FD
-detector from `models/s3fd.safetensors`. **Both auto-download on first run**
-(from this repo's [`models-v1` release](https://github.com/m96-chan/VRChatCameraOSC/releases/tag/models-v1))
+The default MediaPipe backend loads `models/face_detection.onnx` (YuNet),
+`models/face_landmarks.onnx` (FaceMesh V2), and `models/face_blendshapes.onnx`
+(Blendshape V2); the `fan` backend loads `models/2dfan4.safetensors` and
+`models/s3fd.safetensors`. **All auto-download on first run** (from this
+repo's [`models-v1` release](https://github.com/m96-chan/VRChatCameraOSC/releases/tag/models-v1))
 if missing — no Python/PyTorch needed. Offline, or if the download fails, the
 loop still runs with tracking disabled and prints a clear message.
 
@@ -96,8 +115,9 @@ uv pip install --python .venv "torch>=2.2" "numpy<2" safetensors face-alignment 
 ```
 
 CLI flags: `--monitor` (headless), `--fake` (synthetic camera), `--frames N`
-(stop after N frames), `--weights PATH`, `--detector PATH` (a custom
-`--weights`/`--detector` path is never auto-downloaded), `--detect-interval N`
+(stop after N frames), `--backend mediapipe|fan` (overrides the config's
+`[tracking] backend`), `--weights PATH`, `--detector PATH` (FAN backend only;
+a custom path is never auto-downloaded), `--detect-interval N`
 (see Performance below), `--calibrate-frames N` (see Calibration below; `0`
 skips calibration).
 
@@ -106,23 +126,34 @@ end-to-end avatar path.
 
 ### Neutral-pose calibration
 
-The mapping's "neutral" reference points (what counts as a relaxed brow, a
-flat mouth, etc.) are calibrated against a synthetic test face by default,
-which doesn't match every real face/camera — this can leave a parameter
-permanently reading `0` even while it's genuinely responding to expression
-changes (issue #15). To fix this, the app captures a short window at startup
-(`--calibrate-frames N`, default 10 frames) — **hold a relaxed, forward-facing
-expression** while it says `calibrating neutral pose ...` — and re-derives the
-neutral baselines from what it actually sees. In the TUI, press **`c`** at any
-time to redo it (camera angle or lighting changed, or you weren't ready the
-first time).
+Both backends capture a short window at startup (`--calibrate-frames N`,
+default 10 frames) — **hold a relaxed, forward-facing expression** while it
+says `calibrating neutral pose ...`. In the TUI, press **`c`** at any time to
+redo it (camera angle or lighting changed, or you weren't ready the first
+time).
+
+- **MediaPipe backend:** the raw Blendshape V2 coefficients have a small
+  non-zero resting baseline per channel (e.g. `jawOpen` ≈ 0.2 with the mouth
+  closed, and each eye's `eyeBlink` baseline differs). Calibration subtracts
+  the per-channel resting baseline so a resting face reads `0` everywhere, and
+  blink is self-calibrated **per eye** — open reads `0`, a blink a fixed gain
+  above your own baseline saturates to `1`. The head's "facing front" pose is
+  baselined the same way. If startup calibration is skipped, the same
+  baselines are accumulated automatically over the first frames of tracking.
+- **FAN backend:** re-derives the geometric neutral ratios (issue #15) —
+  without this some parameters stay permanently clamped at one end.
 
 ### Performance
 
-`candle` builds with no acceleration backend by default (CPU fallback only),
-which — combined with running the S3FD detector on every frame — measured
-**~0.5 FPS** on a 16-core desktop CPU (issue #13). Two independent
-optimizations address this:
+The default MediaPipe backend measured **~6.6 FPS on CPU** (16-core desktop,
+`--release`) — three ONNX graph evaluations per frame via `candle-onnx`'s
+interpreter. Usable for expression sync; GPU execution for this backend is a
+future optimization.
+
+The FAN backend: `candle` builds with no acceleration backend by default
+(CPU fallback only), which — combined with running the S3FD detector on every
+frame — measured **~0.5 FPS** on a 16-core desktop CPU (issue #13). Two
+independent optimizations address this:
 
 - **Detect-then-track (always on, default `--detect-interval 8`):** the S3FD
   detector is by far the most expensive stage, and a face doesn't move far
@@ -184,8 +215,10 @@ OSC host/port, camera device, and tracking settings will be configurable from th
 - [x] Camera capture pipeline
 - [x] Face mesh landmark extraction (FAN / candle, PyTorch-parity verified)
 - [x] Face detector (S3FD / candle) — auto-crop the face before FAN
+- [x] MediaPipe backend (YuNet → FaceMesh V2 → Blendshape V2, ARKit-52) — new default, AvataCam-parity expression quality
 - [ ] Hand / finger landmark extraction
 - [x] Landmark → VRChat OSC parameter mapping
+- [x] ARKit blendshapes → OSC mapping (per-eye blink self-calibration, One-Euro smoothing)
 - [x] OSC sender (UDP) + dry-run monitor
 - [x] TUI: live values, status, and configuration
 - [x] Config file support

@@ -205,3 +205,112 @@ fn calibrate_neutral_without_tracker_is_a_harmless_noop() {
     assert_eq!(n, 0);
     assert_eq!(recorded.lock().unwrap().len(), 0);
 }
+
+// ---- ARKit (MediaPipe-backend) stack: issue #17 ----
+
+use vrchat_camera_osc::mapping::arkit::{ArkitMapper, ArkitMappingConfig};
+use vrchat_camera_osc::tracking::arkit::{
+    ArkitBlendshapes, ArkitFaceFrame, ArkitFaceTracker, HeadPose, NUM_BLENDSHAPES,
+};
+
+/// An ARKit tracker that always returns the same frame.
+struct StubArkitTracker(ArkitFaceFrame);
+impl ArkitFaceTracker for StubArkitTracker {
+    fn track(&mut self, _frame: &Frame) -> anyhow::Result<Option<ArkitFaceFrame>> {
+        Ok(Some(self.0))
+    }
+}
+
+fn resting_arkit_frame() -> ArkitFaceFrame {
+    // Non-zero resting baselines, like the real Blendshape V2 output.
+    let mut bs = [0.0f32; NUM_BLENDSHAPES];
+    bs[9] = 0.08; // eyeBlinkLeft
+    bs[10] = 0.12; // eyeBlinkRight
+    bs[25] = 0.22; // jawOpen
+    bs[38] = 0.30; // mouthPucker
+    ArkitFaceFrame {
+        blendshapes: ArkitBlendshapes(bs),
+        head: HeadPose {
+            roll: 0.02,
+            yaw: -0.01,
+            pitch: -0.05,
+        },
+    }
+}
+
+#[test]
+fn arkit_pipeline_wires_capture_to_osc() {
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let sink = RecordingSink(recorded.clone());
+
+    let mut pipeline = Pipeline::new_arkit(
+        Box::new(FakeCamera::new(320, 240)),
+        Some(Box::new(StubArkitTracker(resting_arkit_frame()))),
+        ArkitMapper::new(ArkitMappingConfig::default()),
+        Box::new(sink),
+    );
+
+    let outcome = pipeline.step().unwrap();
+    assert_eq!(outcome.frame_size, (320, 240));
+    assert_eq!(outcome.params.len(), 10, "ten avatar params expected");
+    for p in &outcome.params {
+        match p.value {
+            vrchat_camera_osc::osc::OscValue::Float(v) => assert!(v.is_finite()),
+            _ => panic!("mapping should emit floats"),
+        }
+        assert!(p.address().starts_with("/avatar/parameters/"));
+    }
+
+    for _ in 0..3 {
+        pipeline.step().unwrap();
+    }
+    assert_eq!(recorded.lock().unwrap().len(), 10 * 4);
+}
+
+#[test]
+fn arkit_calibrate_neutral_zeroes_resting_baselines_and_sends_no_osc() {
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let sink = RecordingSink(recorded.clone());
+    let mut pipeline = Pipeline::new_arkit(
+        Box::new(FakeCamera::new(320, 240)),
+        Some(Box::new(StubArkitTracker(resting_arkit_frame()))),
+        ArkitMapper::new(ArkitMappingConfig::default()),
+        Box::new(sink),
+    );
+
+    let n = pipeline.calibrate_neutral(5).unwrap();
+    assert_eq!(n, 5, "every frame found a face");
+    assert_eq!(
+        recorded.lock().unwrap().len(),
+        0,
+        "calibration must not send OSC"
+    );
+
+    // After calibration, the same resting frame must map to ~0 everywhere:
+    // the whole point of the neutral baseline (mouth closed => MouthOpen 0).
+    let outcome = pipeline.step().unwrap();
+    for p in &outcome.params {
+        if let vrchat_camera_osc::osc::OscValue::Float(v) = p.value {
+            assert!(
+                v.abs() < 0.05,
+                "{} should read ~0 at rest after calibration, got {v}",
+                p.name
+            );
+        }
+    }
+}
+
+#[test]
+fn arkit_pipeline_without_tracker_sends_nothing() {
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let sink = RecordingSink(recorded.clone());
+    let mut pipeline = Pipeline::new_arkit(
+        Box::new(FakeCamera::new(64, 48)),
+        None,
+        ArkitMapper::new(ArkitMappingConfig::default()),
+        Box::new(sink),
+    );
+    let outcome = pipeline.step().unwrap();
+    assert!(outcome.params.is_empty());
+    assert_eq!(recorded.lock().unwrap().len(), 0);
+}

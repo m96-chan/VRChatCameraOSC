@@ -79,6 +79,8 @@
 use crate::osc::OscParam;
 use crate::tracking::{FaceLandmarks, Landmark};
 
+pub mod arkit;
+
 /// Output parameter names, in a stable emission order.
 const PARAM_NAMES: [&str; 10] = [
     "MouthOpen",
