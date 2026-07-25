@@ -35,5 +35,9 @@ jobs:
       - uses: taiki-e/install-action@cargo-llvm-cov
       - name: Coverage (fail under 90%)
         # The `camera` feature needs a real webcam, so exclude it from the
-        # coverage run; measure the deterministic, testable surface.
-        run: cargo llvm-cov --no-default-features --fail-under-lines 90 --summary-only
+        # coverage run; measure the deterministic, testable surface. `main.rs`
+        # is bin entry / terminal-I/O glue (not unit-tested) — exclude it.
+        run: >
+          cargo llvm-cov --no-default-features
+          --ignore-filename-regex 'src/main\.rs'
+          --fail-under-lines 90 --summary-only

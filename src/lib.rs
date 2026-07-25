@@ -15,5 +15,6 @@ pub mod capture;
 pub mod config;
 pub mod mapping;
 pub mod osc;
+pub mod pipeline;
 pub mod tracking;
 pub mod tui;

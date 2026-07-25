@@ -34,7 +34,32 @@ Realtime face tracking for VRChat, driven from your webcam and delivered over OS
 
 ## Status
 
-🚧 Early development. Interfaces and parameters are subject to change.
+🚧 Early development. Interfaces and parameters are subject to change. The full
+pipeline (capture → face mesh → mapping → OSC) is wired end-to-end; a face
+**detector** (to auto-crop the face) is the main remaining tracking gap — today
+the tracker treats the whole frame as the face.
+
+## Architecture
+
+Each stage sits behind a trait so platform- and model-specific pieces stay
+swappable:
+
+| Stage | Module | Notes |
+|-------|--------|-------|
+| Capture | `capture::CameraSource` | macOS AVFoundation via `nokhwa`; synthetic `FakeCamera` for tests/headless |
+| Tracking | `tracking::FaceTracker` | `fan::FanTracker` — the face-alignment **2DFAN4** net ported to pure-Rust **candle** |
+| Mapping | `mapping::Mapper` | iBUG-68 landmarks → normalised avatar params (mouth/blink/brows/head pose), clamped + smoothed |
+| OSC | `osc::OscSink` | `UdpOscSender` to VRChat, or `MonitorSink` dry-run |
+| Loop | `pipeline::Pipeline` | `capture → track → map → OSC`, driven by the TUI or headless monitor |
+
+### Model & PyTorch parity
+
+Face landmarks come from a candle port of [`1adrianb/face-alignment`](https://github.com/1adrianb/face-alignment)
+(2DFAN4). The port is validated for **numeric parity** against the PyTorch
+reference: pretrained weights are exported to safetensors and the Rust output is
+compared to PyTorch on identical input. Observed agreement is to f32 precision
+(full-network max abs diff ≈ 4e-7). See [`reference/`](reference/) and the
+`fan_parity` / `fan_convblock_parity` / `fan_units` tests.
 
 ## Getting Started
 
@@ -44,11 +69,28 @@ Realtime face tracking for VRChat, driven from your webcam and delivered over OS
 # build
 cargo build --release
 
-# run
+# run (TUI)
 cargo run --release
+
+# headless OSC monitor / dry-run demo (no VRChat needed):
+#   prints the /avatar/parameters/* it would send, using a synthetic camera
+cargo run --release -- --monitor --fake --frames 20
 ```
 
-VRChat must have **OSC enabled** (Action Menu → Options → OSC → Enabled).
+The tracker loads FAN weights from `models/2dfan4.safetensors`. Generate them
+once with the reference harness (see [`reference/README.md`](reference/README.md)):
+
+```bash
+cd reference && uv venv --python 3.11
+uv pip install --python .venv "torch>=2.2" "numpy<2" safetensors face-alignment scikit-image
+.venv/bin/python gen_fixtures.py   # downloads + converts the pretrained weights
+```
+
+CLI flags: `--monitor` (headless), `--fake` (synthetic camera), `--frames N`
+(stop after N frames), `--weights PATH`.
+
+VRChat must have **OSC enabled** (Action Menu → Options → OSC → Enabled) for the
+end-to-end avatar path.
 
 ## Configuration
 
@@ -56,13 +98,14 @@ OSC host/port, camera device, and tracking settings will be configurable from th
 
 ## Roadmap
 
-- [ ] Camera capture pipeline
-- [ ] Face mesh landmark extraction
+- [x] Camera capture pipeline
+- [x] Face mesh landmark extraction (FAN / candle, PyTorch-parity verified)
+- [ ] Face detector (auto-crop the face before FAN)
 - [ ] Hand / finger landmark extraction
-- [ ] Landmark → VRChat OSC parameter mapping
-- [ ] OSC sender (UDP)
-- [ ] TUI: live values, status, and configuration
-- [ ] Config file support
+- [x] Landmark → VRChat OSC parameter mapping
+- [x] OSC sender (UDP) + dry-run monitor
+- [x] TUI: live values, status, and configuration
+- [x] Config file support
 
 ## License
 
