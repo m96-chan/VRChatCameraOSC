@@ -1,0 +1,15 @@
+{
+  "name": "dev.m96chan.vrchatcameraosc.avatarsetup",
+  "displayName": "VRChatCameraOSC Avatar Setup",
+  "version": "0.1.0",
+  "unity": "2022.3",
+  "description": "Editor wizard that wires a Humanoid VRChat avatar's existing blend shapes and head bone to the 10 OSC parameters VRChatCameraOSC sends (see issue #16). Generates/merges VRC Expression Parameters and FX Animator Controller layers; does not create blend shapes or run at avatar runtime.",
+  "author": {
+    "name": "m96-chan"
+  },
+  "license": "MIT OR Apache-2.0",
+  "vpmDependencies": {
+    "com.vrchat.base": "3.0.0",
+    "com.vrchat.avatars": "3.0.0"
+  }
+}

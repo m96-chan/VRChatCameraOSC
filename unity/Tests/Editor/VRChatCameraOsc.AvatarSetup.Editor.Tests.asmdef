@@ -1,0 +1,24 @@
+{
+    "name": "VRChatCameraOsc.AvatarSetup.Editor.Tests",
+    "rootNamespace": "VRChatCameraOsc.AvatarSetup.Tests",
+    "references": [
+        "VRC.SDKBase",
+        "VRC.SDK3A",
+        "VRChatCameraOsc.AvatarSetup.Editor",
+        "UnityEngine.TestRunner",
+        "UnityEditor.TestRunner"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "VRC_SDK_VRCSDK3"
+    ],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

@@ -169,6 +169,12 @@ Full derivation (which landmarks, which formula) is documented in
 mechanics: [OSC Avatar Parameters](https://docs.vrchat.com/docs/osc-avatar-parameters),
 [Avatar Animator Parameters](https://creators.vrchat.com/avatars/animator-parameters/).
 
+**Doing this by hand is tedious and error-prone — [`unity/`](unity/) is an
+editor wizard (VRChat SDK3, Humanoid avatars) that automates it**: point it at
+your avatar and the blend shapes it already has, and it generates the
+Expression Parameters and FX Animator Controller layers above for you. See
+[`unity/README.md`](unity/README.md).
+
 ## Configuration
 
 OSC host/port, camera device, and tracking settings will be configurable from the TUI and/or a config file. (TBD — see Roadmap.)
@@ -183,6 +189,7 @@ OSC host/port, camera device, and tracking settings will be configurable from th
 - [x] OSC sender (UDP) + dry-run monitor
 - [x] TUI: live values, status, and configuration
 - [x] Config file support
+- [x] Unity SDK: avatar setup wizard (Humanoid) — see [`unity/`](unity/)
 
 ## License
 

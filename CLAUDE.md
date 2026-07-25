@@ -35,6 +35,14 @@ OSC. No GUI window; everything runs in a TUI.
   Linux, MediaFoundation on Windows *(planned)*) behind the `capture::native`
   boundary so each backend slots in without churn. VRChat may run on a
   separate machine — OSC reaches it over the network.
+- **[`unity/`](unity/) is a separate sub-project**: a Unity/C# VRChat SDK3
+  editor package (Humanoid-avatar setup wizard, issue #16), not covered by the
+  Rust-focused rules below as written. It has its own `unity/README.md`, its
+  own Unity Test Framework tests (`unity/Tests/Editor/`), and its own
+  build/verify loop (Unity Editor batch mode — `-runTests -testPlatform
+  EditMode`), not `cargo`. Its 10-parameter spec (`unity/Editor/OscParameterSpec.cs`)
+  must be kept in sync by hand with `src/mapping/mod.rs` — there is no
+  automated check across the Rust/C# boundary.
 
 ## Development rules (must follow)
 
