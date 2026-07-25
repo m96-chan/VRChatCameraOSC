@@ -61,7 +61,17 @@ folder in first.)
    shape (pucker) — leaving the negative one on `(skip)` is fine if your
    avatar doesn't have one.
 4. Leave "wire head pose" checked (default) to also drive the head bone.
-5. The button at the bottom is a single **ON/OFF toggle** reflecting whether
+5. If your avatar has VRChat's native **Eyelids** (Eye Look → Eyelids, auto
+   blink/eye-tracking) set to Blendshapes or Bones *and* you wired
+   `EyeBlinkLeft`/`EyeBlinkRight`, a checkbox appears to disable it — leave it
+   checked. Otherwise VRChat's own automatic blink independently opens/closes
+   its own eyelid shape (often a *different* shape than the one driven by
+   OSC, e.g. a shared `vrc.blink`) on its own timer, fighting with — and
+   sometimes fully masking — the OSC-driven blink. This is exactly what
+   caused a real report of "eyes stuck closed" despite `EyeBlinkLeft`/`Right`
+   correctly reading near `0` (open) on the OSC side. Re-enable it yourself
+   in Eye Look settings if you ever remove the OSC blink wiring.
+6. The button at the bottom is a single **ON/OFF toggle** reflecting whether
    this avatar currently has all 10 parameters wired:
    - **OFF → click → Apply**: creates (or reuses) the avatar's FX Animator
      Controller and Expression Parameters asset, adds the missing parameters,
@@ -72,7 +82,7 @@ folder in first.)
      wizard added, cleanly (including their generated BlendTree/AnimationClip
      sub-assets) — a full undo without touching anything else on the avatar's
      FX controller or Expression Parameters.
-6. Verify **in VRChat** (upload or local test), not just in the editor —
+7. Verify **in VRChat** (upload or local test), not just in the editor —
    Humanoid muscle-driven additive layers and Animator direct-blend setups
    behave the same in-editor and in-client, but VRChat's own avatar
    validation/OSC pipeline is the real test.

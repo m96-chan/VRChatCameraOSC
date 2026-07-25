@@ -33,6 +33,7 @@ namespace VRChatCameraOsc.AvatarSetup
         readonly Dictionary<string, SkinnedMeshRenderer> _negativeRenderer = new Dictionary<string, SkinnedMeshRenderer>();
         readonly Dictionary<string, string> _negativeBlendShape = new Dictionary<string, string>();
         bool _includeHeadPose = true;
+        bool _disableNativeEyelids = true;
         bool _pendingAutoFill;
         Vector2 _scroll;
 
@@ -106,6 +107,16 @@ namespace VRChatCameraOsc.AvatarSetup
             _includeHeadPose = EditorGUILayout.ToggleLeft(
                 "Wire HeadRoll / HeadYaw / HeadPitch to the Humanoid head bone (additive layer)",
                 _includeHeadPose);
+
+            var eyelidType = _avatar.customEyeLookSettings.eyelidType;
+            if (eyelidType != VRCAvatarDescriptor.EyelidType.None &&
+                (_positiveRenderer.ContainsKey("EyeBlinkLeft") || _positiveRenderer.ContainsKey("EyeBlinkRight")))
+            {
+                _disableNativeEyelids = EditorGUILayout.ToggleLeft(
+                    "Disable VRChat's native auto-blink/eye-tracking (Eyelids is currently " +
+                    $"{eyelidType}) — otherwise it fights with OSC-driven blinking",
+                    _disableNativeEyelids);
+            }
 
             EditorGUILayout.Space();
             var wired = VrcExpressionParametersMerger.IsFullyWired(_avatar.expressionParameters, OscParameterSpec.All);
@@ -297,12 +308,27 @@ namespace VRChatCameraOsc.AvatarSetup
                 }
             }
 
+            var disabledEyelids = false;
+            if (_disableNativeEyelids &&
+                (_positiveRenderer.ContainsKey("EyeBlinkLeft") || _positiveRenderer.ContainsKey("EyeBlinkRight")) &&
+                _avatar.customEyeLookSettings.eyelidType != VRCAvatarDescriptor.EyelidType.None)
+            {
+                Undo.RecordObject(_avatar, "Disable native VRChat auto-blink (VRChatCameraOSC drives blink)");
+                _avatar.customEyeLookSettings.eyelidType = VRCAvatarDescriptor.EyelidType.None;
+                EditorUtility.SetDirty(_avatar);
+                disabledEyelids = true;
+            }
+
             EditorUtility.SetDirty(controller);
             AssetDatabase.SaveAssets();
             EditorUtility.DisplayDialog(
                 "VRChatCameraOSC Setup",
                 $"Done. Added {added} new expression parameter(s). FX layers wired for the selected blend shapes" +
-                (_includeHeadPose ? " and head pose." : "."),
+                (_includeHeadPose ? " and head pose." : ".") +
+                (disabledEyelids
+                    ? "\n\nAlso disabled VRChat's native Eyelids (was fighting with OSC-driven blinking) — " +
+                      "re-enable it yourself in the avatar's Eye Look settings if you ever remove OSC blink wiring."
+                    : ""),
                 "OK");
         }
 
