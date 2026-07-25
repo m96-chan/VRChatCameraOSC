@@ -1,10 +1,13 @@
-//! macOS AVFoundation camera backend (gated on `target_os = "macos"` +
-//! the `camera` feature).
+//! Native webcam backend — AVFoundation on macOS, V4L2 on Linux (gated on
+//! `target_os` + the `camera` feature; see `Cargo.toml`'s per-target
+//! `nokhwa` dependencies).
 //!
-//! This is intentionally thin: it wires nokhwa's AVFoundation backend to the
-//! [`CameraSource`] contract and pushes all the testable logic (pixel packing,
-//! validation) into [`crate::capture::convert`]. It cannot be unit-tested in CI
-//! (no webcam), so correctness of the moving parts lives in those pure helpers.
+//! This is intentionally thin: it wires nokhwa's per-platform backend (picked
+//! automatically via [`nokhwa::utils::ApiBackend::Auto`]) to the
+//! [`CameraSource`] contract and pushes all the testable logic (pixel
+//! packing, validation) into [`crate::capture::convert`]. It cannot be
+//! unit-tested in CI (no webcam), so correctness of the moving parts lives in
+//! those pure helpers.
 //!
 //! Failure modes — no camera present and permission denied — surface as clear
 //! [`anyhow`] errors; this module never panics on them.
@@ -15,23 +18,23 @@ use nokhwa::pixel_format::RgbFormat;
 use nokhwa::utils::{ApiBackend, CameraIndex, RequestedFormat, RequestedFormatType, Resolution};
 use nokhwa::Camera;
 
-/// A live webcam opened through AVFoundation.
-pub struct MacosCamera {
+/// A live webcam opened through the platform's native backend.
+pub struct NativeCamera {
     camera: Camera,
     width: u32,
     height: u32,
 }
 
-impl MacosCamera {
-    /// Enumerate available AVFoundation capture devices.
+impl NativeCamera {
+    /// Enumerate available capture devices on the native backend.
     ///
     /// # Errors
     /// Returns an error if the platform query fails (e.g. permission not yet
     /// granted).
     pub fn list_devices() -> Result<Vec<CameraInfo>> {
         request_permission();
-        let devices = nokhwa::query(ApiBackend::AVFoundation)
-            .map_err(|e| anyhow!("failed to enumerate AVFoundation cameras: {e}"))?;
+        let devices = nokhwa::query(ApiBackend::Auto)
+            .map_err(|e| anyhow!("failed to enumerate cameras: {e}"))?;
         Ok(devices
             .into_iter()
             .map(|info| CameraInfo {
@@ -73,7 +76,7 @@ impl MacosCamera {
     }
 }
 
-impl CameraSource for MacosCamera {
+impl CameraSource for NativeCamera {
     fn next_frame(&mut self) -> Result<Frame> {
         let buffer = self
             .camera
@@ -95,9 +98,10 @@ impl CameraSource for MacosCamera {
     }
 }
 
-/// Request camera permission on macOS. nokhwa resolves the prompt via a
-/// callback; a denied/pending grant surfaces later as an open/query error,
-/// which we translate into a clear message.
+/// Request camera permission where the platform needs one (macOS). nokhwa
+/// resolves the prompt via a callback; a denied/pending grant surfaces later
+/// as an open/query error, which we translate into a clear message. On
+/// backends without a permission model (e.g. V4L2 on Linux) this is a no-op.
 fn request_permission() {
     if !nokhwa::nokhwa_check() {
         nokhwa::nokhwa_initialize(|_granted| {});

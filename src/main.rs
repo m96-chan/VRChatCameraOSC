@@ -7,10 +7,11 @@
 //! - default (TUI): the terminal control surface, updating live values, status,
 //!   and config while the pipeline runs.
 //!
-//! Camera: the macOS AVFoundation backend is used when available; `--fake`
-//! forces the synthetic source (also the automatic fallback when no webcam is
-//! present). Tracker: loaded from `models/2dfan4.safetensors` when present;
-//! without it the loop runs but emits no parameters (a clear warning is shown).
+//! Camera: the native backend (AVFoundation on macOS, V4L2 on Linux) is used
+//! when available; `--fake` forces the synthetic source (also the automatic
+//! fallback when no webcam is present). Tracker: loaded from
+//! `models/2dfan4.safetensors` when present; without it the loop runs but
+//! emits no parameters (a clear warning is shown).
 
 use std::io::{self, Stdout};
 use std::path::PathBuf;
@@ -92,10 +93,10 @@ fn build_camera(cfg: &Config, fake: bool) -> Box<dyn CameraSource> {
     Box::new(FakeCamera::new(cfg.camera.width, cfg.camera.height))
 }
 
-#[cfg(all(target_os = "macos", feature = "camera"))]
+#[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "camera"))]
 fn try_real_camera(index: u32, w: u32, h: u32) -> Option<Box<dyn CameraSource>> {
-    use vrchat_camera_osc::capture::macos::MacosCamera;
-    match MacosCamera::open(index, w, h) {
+    use vrchat_camera_osc::capture::native::NativeCamera;
+    match NativeCamera::open(index, w, h) {
         Ok(cam) => Some(Box::new(cam)),
         Err(e) => {
             eprintln!("could not open webcam {index}: {e}");
@@ -104,7 +105,7 @@ fn try_real_camera(index: u32, w: u32, h: u32) -> Option<Box<dyn CameraSource>> 
     }
 }
 
-#[cfg(not(all(target_os = "macos", feature = "camera")))]
+#[cfg(not(all(any(target_os = "macos", target_os = "linux"), feature = "camera")))]
 fn try_real_camera(_index: u32, _w: u32, _h: u32) -> Option<Box<dyn CameraSource>> {
     None
 }

@@ -24,15 +24,20 @@ safetensors = "0.8"
 ratatui = "0.29"
 crossterm = "0.28"
 
-# Camera capture (macOS AVFoundation via nokhwa). Optional so the rest of the
-# crate still builds if the native backend is unavailable on a given target.
-nokhwa = { version = "0.10", features = ["input-avfoundation"], optional = true }
-
 [features]
 default = ["camera"]
 # Enables the real webcam backend. Without it, only the synthetic FakeCamera is
 # available (used by tests and CI, which have no camera).
 camera = ["dep:nokhwa"]
+
+# Camera capture, via nokhwa — backend picked per target OS so each platform
+# only pulls in the native dependency it needs. Optional so the rest of the
+# crate still builds if the native backend is unavailable on a given target.
+[target.'cfg(target_os = "macos")'.dependencies]
+nokhwa = { version = "0.10", features = ["input-avfoundation"], optional = true }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nokhwa = { version = "0.10", features = ["input-v4l"], optional = true }
 
 [dev-dependencies]
 approx = "0.5"

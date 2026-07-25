@@ -29,10 +29,12 @@ OSC. No GUI window; everything runs in a TUI.
 - **Avatar mapping:** landmarks → VRChat avatar parameters (expression params,
   and/or the standard `GestureLeft` / `GestureRight` for hands). The exact
   parameter mapping is designed before it is wired up.
-- **Target OS:** **macOS first** (the current development machine). Keep
-  platform-specific code (camera capture: AVFoundation on macOS) behind clear
-  boundaries so other targets slot in later. VRChat may run on a separate
-  machine — OSC reaches it over the network.
+- **Target OS:** **cross-platform — macOS, Linux, and Windows** (decided
+  2026-07-25; see issue #10). Development currently happens on Linux. Keep
+  platform-specific code (camera capture: AVFoundation on macOS, V4L2 on
+  Linux, MediaFoundation on Windows *(planned)*) behind the `capture::native`
+  boundary so each backend slots in without churn. VRChat may run on a
+  separate machine — OSC reaches it over the network.
 
 ## Development rules (must follow)
 
@@ -138,9 +140,10 @@ end-to-end path.
 
 - Keep new code consistent with the surrounding style; run `cargo fmt` and
   `cargo clippy`.
-- **macOS is the primary target** (developed/verified on this machine first).
-  Keep platform-specific code (e.g. capture: AVFoundation on macOS) behind clear
-  boundaries so other targets slot in without churn.
+- **Cross-platform (macOS, Linux, Windows)** — currently developed/verified on
+  Linux. Keep platform-specific code (e.g. capture: AVFoundation on macOS,
+  V4L2 on Linux) behind clear boundaries so other targets slot in without
+  churn.
 - The TUI is the primary control surface — no separate GUI window. The avatar is
   rendered by VRChat, not by this app.
 
