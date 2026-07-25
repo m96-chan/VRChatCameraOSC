@@ -186,7 +186,7 @@ namespace VRChatCameraOsc.AvatarSetup
                 {
                     if (!_positiveRenderer.ContainsKey(spec.Name))
                     {
-                        var positive = BlendShapeAutoMatcher.FindBlendShape(body, BlendShapeAutoMatcher.MouthWidePositiveKeywords);
+                        var positive = BlendShapeAutoMatcher.FindMouthWidePositive(body);
                         if (positive != null)
                         {
                             _positiveRenderer[spec.Name] = body;
@@ -195,7 +195,7 @@ namespace VRChatCameraOsc.AvatarSetup
                     }
                     if (!_negativeRenderer.ContainsKey(spec.Name))
                     {
-                        var negative = BlendShapeAutoMatcher.FindBlendShape(body, BlendShapeAutoMatcher.MouthWideNegativeKeywords);
+                        var negative = BlendShapeAutoMatcher.FindMouthWideNegative(body);
                         if (negative != null)
                         {
                             _negativeRenderer[spec.Name] = body;

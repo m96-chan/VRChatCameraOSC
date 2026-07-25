@@ -246,6 +246,15 @@ pub struct ArkitMappingConfig {
     /// [`ArkitFaceFrame`] carries no timestamp (see module docs). Default:
     /// `1/30` (typical webcam rate).
     pub assumed_dt: f32,
+    /// Output deadzone applied to every final parameter (issue #16 live
+    /// test): baseline calibration is only as good as the subject's
+    /// stillness during the window, and a few hundredths of residual on
+    /// e.g. `BrowUp`/`MouthSmile` keeps a partial expression permanently on
+    /// the avatar ("worried eyebrows"), while residual head values keep
+    /// nudging muscle layers and exciting PhysBones. Values inside the
+    /// deadzone read exactly 0; above it the output rescales continuously
+    /// to preserve full range.
+    pub deadzone: f32,
 }
 
 impl Default for ArkitMappingConfig {
@@ -262,6 +271,7 @@ impl Default for ArkitMappingConfig {
             yaw_max_rad: 45.0_f32.to_radians(),
             pitch_max_rad: 30.0_f32.to_radians(),
             assumed_dt: 1.0 / 30.0,
+            deadzone: 0.06,
         }
     }
 }
@@ -509,10 +519,14 @@ impl ArkitMapper {
             eprintln!("[DEBUG_MAPPING][arkit] raw = {raw:?}");
         }
 
+        let dz = self.config.deadzone.clamp(0.0, 0.9);
         let mut out = Vec::with_capacity(PARAM_NAMES.len());
         for i in 0..PARAM_NAMES.len() {
             let (lo, hi) = PARAM_RANGES[i];
-            out.push(OscParam::float(PARAM_NAMES[i], raw[i].clamp(lo, hi)));
+            out.push(OscParam::float(
+                PARAM_NAMES[i],
+                deadzone(raw[i], dz).clamp(lo, hi),
+            ));
         }
         out
     }
@@ -551,6 +565,17 @@ impl ArkitMapper {
         self.head_calib.seed(head_avg);
         self.filters = build_channel_filters(&self.config);
         self.head_filters = build_head_filters(&self.config);
+    }
+}
+
+/// Deadzone with continuous rescale: `|v| <= dz` reads exactly 0, and the
+/// remaining span rescales so the output still reaches ±1 at input ±1 (no
+/// dead range at the top, no step at the threshold).
+fn deadzone(v: f32, dz: f32) -> f32 {
+    if v.abs() <= dz {
+        0.0
+    } else {
+        (v.abs() - dz) / (1.0 - dz) * v.signum()
     }
 }
 
@@ -1007,6 +1032,57 @@ mod tests {
         }
         fn next_f32(&mut self) -> f32 {
             (self.next_u32() as f32) / (u32::MAX as f32)
+        }
+    }
+
+    #[test]
+    fn deadzone_zeroes_small_residuals_and_preserves_full_range() {
+        assert_eq!(deadzone(0.0, 0.06), 0.0);
+        assert_eq!(deadzone(0.05, 0.06), 0.0);
+        assert_eq!(deadzone(-0.05, 0.06), 0.0);
+        assert!(deadzone(0.07, 0.06) > 0.0);
+        assert!((deadzone(1.0, 0.06) - 1.0).abs() < 1e-6);
+        assert!((deadzone(-1.0, 0.06) + 1.0).abs() < 1e-6);
+        // Continuous at the threshold.
+        assert!(deadzone(0.0601, 0.06) < 0.001);
+    }
+
+    #[test]
+    fn residual_baseline_after_calibration_reads_exactly_zero() {
+        // Real-world symptom (issue #16 live test): brow/smile residuals of
+        // ~0.03 after calibration left the avatar with permanently
+        // half-raised "worried" eyebrows. Inside the deadzone -> exact 0.
+        let mut mapper = ArkitMapper::new(ArkitMappingConfig::default());
+        let mut base = [0.0f32; crate::tracking::arkit::NUM_BLENDSHAPES];
+        base[25] = 0.20; // jawOpen baseline
+        base[3] = 0.30; // browInnerUp baseline
+        let neutral = ArkitFaceFrame {
+            blendshapes: ArkitBlendshapes(base),
+            head: HeadPose::default(),
+        };
+        mapper.calibrate(&vec![neutral; 5]);
+
+        // Slight drift above the calibrated baseline, within the deadzone.
+        let mut drift = base;
+        drift[25] += 0.03;
+        drift[3] += 0.04;
+        let frame = ArkitFaceFrame {
+            blendshapes: ArkitBlendshapes(drift),
+            head: HeadPose {
+                roll: 0.02,
+                yaw: -0.02,
+                pitch: 0.02,
+            },
+        };
+        // Run several frames so smoothing converges.
+        let mut last = Vec::new();
+        for _ in 0..30 {
+            last = mapper.map(&frame);
+        }
+        for p in &last {
+            if let crate::osc::OscValue::Float(v) = p.value {
+                assert_eq!(v, 0.0, "{} must read exactly 0 inside the deadzone", p.name);
+            }
         }
     }
 }

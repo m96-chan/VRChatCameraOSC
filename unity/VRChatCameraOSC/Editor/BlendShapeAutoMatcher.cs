@@ -41,6 +41,50 @@ namespace VRChatCameraOsc.AvatarSetup
         public static readonly string[] MouthWideNegativeKeywords = { "pucker", "mouth_pucker", "kiss", "duck" };
 
         /// <summary>
+        /// Face-region guard (issue #16 live-test regression): generic
+        /// keywords like "smile"/"wide" happily matched *eye* shapes
+        /// (`eye_smile_1`, `eyelid_inner_wide`) for *mouth* parameters,
+        /// leaving the avatar's eyes permanently half-closed with real
+        /// blinks stacking on top. A candidate whose name clearly belongs
+        /// to another region is rejected outright — better to pre-fill
+        /// `(skip)` than to wire the wrong region.
+        /// </summary>
+        static readonly string[] MouthForbidden = { "eye", "lid", "blink", "brow", "mayu", "cheek", "hoho", "nose" };
+        static readonly string[] EyeForbidden = { "mouth", "kuchi", "lip", "brow", "mayu", "cheek", "hoho" };
+        static readonly string[] BrowForbidden = { "mouth", "kuchi", "lip", "blink", "cheek", "hoho" };
+
+        static string[] ForbiddenFor(string paramName)
+        {
+            if (paramName.StartsWith("Mouth", StringComparison.Ordinal))
+            {
+                return MouthForbidden;
+            }
+            if (paramName.StartsWith("EyeBlink", StringComparison.Ordinal))
+            {
+                return EyeForbidden;
+            }
+            if (paramName.StartsWith("BrowUp", StringComparison.Ordinal))
+            {
+                return BrowForbidden;
+            }
+            return Array.Empty<string>();
+        }
+
+        /// <summary>Mouth-region-guarded pick for MouthWide's positive
+        /// (wide/grin) shape — see <see cref="MouthWidePositiveKeywords"/>.</summary>
+        public static string FindMouthWidePositive(SkinnedMeshRenderer renderer)
+        {
+            return FindBlendShape(renderer, MouthWidePositiveKeywords, MouthForbidden);
+        }
+
+        /// <summary>Mouth-region-guarded pick for MouthWide's negative
+        /// (pucker/kiss) shape — see <see cref="MouthWideNegativeKeywords"/>.</summary>
+        public static string FindMouthWideNegative(SkinnedMeshRenderer renderer)
+        {
+            return FindBlendShape(renderer, MouthWideNegativeKeywords, MouthForbidden);
+        }
+
+        /// <summary>
         /// Picks the renderer most likely to be the main face mesh: one
         /// named exactly "Body" (case-insensitive), else one whose name
         /// contains "body", else the renderer with the most blend shapes.
@@ -61,12 +105,31 @@ namespace VRChatCameraOsc.AvatarSetup
         /// keyword order. Null if none match or the renderer has no mesh.</summary>
         public static string FindBlendShape(SkinnedMeshRenderer renderer, IReadOnlyList<string> keywords)
         {
+            return FindBlendShape(renderer, keywords, Array.Empty<string>());
+        }
+
+        /// <summary>As <see cref="FindBlendShape(SkinnedMeshRenderer, IReadOnlyList{string})"/>,
+        /// but a candidate whose normalised name contains any
+        /// <paramref name="forbidden"/> substring is skipped (face-region
+        /// guard — see <see cref="MouthForbidden"/>).</summary>
+        public static string FindBlendShape(
+            SkinnedMeshRenderer renderer,
+            IReadOnlyList<string> keywords,
+            IReadOnlyList<string> forbidden)
+        {
             if (renderer == null || renderer.sharedMesh == null || keywords == null)
             {
                 return null;
             }
             var mesh = renderer.sharedMesh;
-            var names = Enumerable.Range(0, mesh.blendShapeCount).Select(mesh.GetBlendShapeName).ToArray();
+            var names = Enumerable.Range(0, mesh.blendShapeCount)
+                .Select(mesh.GetBlendShapeName)
+                .Where(n =>
+                {
+                    var norm = Normalise(n);
+                    return forbidden == null || !forbidden.Any(f => norm.Contains(f));
+                })
+                .ToArray();
 
             foreach (var keyword in keywords)
             {
@@ -80,15 +143,19 @@ namespace VRChatCameraOsc.AvatarSetup
         }
 
         /// <summary>Best-guess blend shape for a single-shape OSC parameter
-        /// (its own keywords, then the shared-shape fallback if any).</summary>
+        /// (its own keywords, then the shared-shape fallback if any), with
+        /// the parameter's face-region guard applied.</summary>
         public static string FindBlendShapeForParam(SkinnedMeshRenderer renderer, string paramName)
         {
             if (!Keywords.TryGetValue(paramName, out var keywords))
             {
                 return null;
             }
-            return FindBlendShape(renderer, keywords)
-                ?? (SharedFallback.TryGetValue(paramName, out var fallback) ? FindBlendShape(renderer, fallback) : null);
+            var forbidden = ForbiddenFor(paramName);
+            return FindBlendShape(renderer, keywords, forbidden)
+                ?? (SharedFallback.TryGetValue(paramName, out var fallback)
+                    ? FindBlendShape(renderer, fallback, forbidden)
+                    : null);
         }
 
         static string Normalise(string name) => name.ToLowerInvariant().Replace(' ', '_').Replace('-', '_');

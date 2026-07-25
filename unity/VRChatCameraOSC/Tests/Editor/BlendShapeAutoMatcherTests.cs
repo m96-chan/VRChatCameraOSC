@@ -108,5 +108,56 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         {
             Assert.IsNull(BlendShapeAutoMatcher.FindBodyRenderer(new SkinnedMeshRenderer[0]));
         }
+
+        // Real-world regression (Chocolat avatar, issue #16 live test):
+        // "smile"/"wide" keywords wired MouthSmile -> eye_smile_1 and
+        // MouthWide -> eyelid_inner_wide, driving EYE shapes from mouth
+        // params (eyes permanently half-closed, blink stacking deeper).
+        // Mouth params must never match another face region's shapes.
+        [Test]
+        public void MouthSmile_NeverMatchesEyeShapes_EvenWhenNoMouthShapeExists()
+        {
+            var body = MakeRenderer("Body", "eye_smile_1", "eye_blink_1_L", "eyelid_inner_wide");
+            Assert.IsNull(BlendShapeAutoMatcher.FindBlendShapeForParam(body, "MouthSmile"));
+        }
+
+        [Test]
+        public void MouthSmile_PrefersMouthShape_OverEyeShapeListedFirst()
+        {
+            var body = MakeRenderer("Body", "eye_smile_1", "mouth_smile_1");
+            Assert.AreEqual("mouth_smile_1", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "MouthSmile"));
+        }
+
+        [Test]
+        public void MouthWide_NeverMatchesEyelidShapes()
+        {
+            var body = MakeRenderer("Body", "eyelid_inner_wide", "eye_wide");
+            Assert.IsNull(BlendShapeAutoMatcher.FindMouthWidePositive(body));
+            var body2 = MakeRenderer("Body2", "eyelid_inner_wide", "mouth_wide_1");
+            Assert.AreEqual("mouth_wide_1", BlendShapeAutoMatcher.FindMouthWidePositive(body2));
+        }
+
+        [Test]
+        public void MouthWideNegative_NeverMatchesEyeShapes()
+        {
+            var body = MakeRenderer("Body", "eye_pucker_weird");
+            Assert.IsNull(BlendShapeAutoMatcher.FindMouthWideNegative(body));
+        }
+
+        [Test]
+        public void BrowUp_StillMatchesEyebrowShapes_RegionGuardMustNotOverreach()
+        {
+            var body = MakeRenderer("Body", "eyebrow_up_L", "eyebrow_up_R");
+            Assert.AreEqual("eyebrow_up_L", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "BrowUpLeft"));
+            Assert.AreEqual("eyebrow_up_R", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "BrowUpRight"));
+        }
+
+        [Test]
+        public void EyeBlink_NeverMatchesEyebrowShapes()
+        {
+            // "eyebrow_close_l" is a brow shape; blink must not grab it.
+            var body = MakeRenderer("Body", "eyebrow_wink_l");
+            Assert.IsNull(BlendShapeAutoMatcher.FindBlendShapeForParam(body, "EyeBlinkLeft"));
+        }
     }
 }
