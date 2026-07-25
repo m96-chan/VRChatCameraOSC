@@ -16,10 +16,13 @@ use super::roi::FaceRoi;
 use super::util::{sample_rgb255, sigmoid};
 use super::{FaceMeshLandmarks, NUM_FACE_LANDMARKS};
 
-const INPUT: usize = 256;
+pub(super) const INPUT: usize = 256;
 
 pub struct FaceMesh {
     model: ModelProto,
+    /// Graph initializers (weights), extracted once at load — re-parsing
+    /// them per eval is the dominant per-frame cost (fork commit 7b0427d).
+    consts: HashMap<String, Tensor>,
     input_name: String,
     device: Device,
 }
@@ -27,9 +30,10 @@ pub struct FaceMesh {
 impl FaceMesh {
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
         // CPU on purpose, even under `--features cuda`: candle-onnx's
-        // `simple_eval` materializes the graph's initializers (weights) on
-        // CPU, so a CUDA input tensor hits "device mismatch in conv2d".
-        // GPU execution for the ONNX path is future work (issue #17).
+        // per-op interpreter is kernel-launch/sync bound on GPU (measured
+        // *slower* than CPU for the small blendshape MLP). The realtime path
+        // instead runs FaceMesh on burn-wgpu (see `burn_mesh`), YuNet rarely
+        // (loss/interval redetect), and this stage's weights pre-extracted.
         let device = Device::Cpu;
         let model = candle_onnx::read_file(path.as_ref())?;
         let input_name = model
@@ -38,8 +42,13 @@ impl FaceMesh {
             .and_then(|g| g.input.first())
             .map(|i| i.name.clone())
             .ok_or_else(|| anyhow::anyhow!("facemesh model has no input"))?;
+        let consts = candle_onnx::initializer_tensors(&model)?
+            .into_iter()
+            .map(|(k, v)| Ok((k, v.to_device(&device)?)))
+            .collect::<candle_core::Result<HashMap<_, _>>>()?;
         Ok(Self {
             model,
+            consts,
             input_name,
             device,
         })
@@ -54,9 +63,9 @@ impl FaceMesh {
     ) -> Result<FaceMeshLandmarks> {
         let buf = warp_crop(width, height, rgb, roi)?;
         let input = Tensor::from_vec(buf, (1, 3, INPUT, INPUT), &self.device)?;
-        let mut inputs = HashMap::new();
+        let mut inputs = self.consts.clone();
         inputs.insert(self.input_name.clone(), input);
-        let outputs = candle_onnx::simple_eval(&self.model, inputs)?;
+        let outputs = candle_onnx::simple_eval_with_initializers(&self.model, inputs)?;
 
         // Landmarks = the 478x3 = 1434-element output; presence = a 1-element
         // output (sigmoid). Identify by element count (names vary per export).
@@ -81,7 +90,7 @@ impl FaceMesh {
 }
 
 /// Bilinear-warp the rotated ROI into a 256x256 RGB, `[0,1]`, **NCHW** buffer.
-fn warp_crop(width: u32, height: u32, rgb: &[u8], roi: &FaceRoi) -> Result<Vec<f32>> {
+pub(super) fn warp_crop(width: u32, height: u32, rgb: &[u8], roi: &FaceRoi) -> Result<Vec<f32>> {
     let (w, h) = (width as i32, height as i32);
     if w == 0 || h == 0 || rgb.len() < (w * h * 3) as usize {
         bail!("invalid frame for facemesh warp");
@@ -106,7 +115,7 @@ fn warp_crop(width: u32, height: u32, rgb: &[u8], roi: &FaceRoi) -> Result<Vec<f
 
 /// Decode raw `478x3` landmarks (+ presence) into frame-normalized
 /// [`FaceMeshLandmarks`].
-fn decode_landmarks(
+pub(super) fn decode_landmarks(
     raw: &[f32],
     presence: f32,
     width: u32,

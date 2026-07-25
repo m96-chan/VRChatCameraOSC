@@ -42,6 +42,9 @@ struct Letterbox {
 
 pub struct FaceDetector {
     model: ModelProto,
+    /// Graph initializers (weights), extracted once at load — re-parsing
+    /// them per eval is the dominant per-frame cost (fork commit 7b0427d).
+    consts: HashMap<String, Tensor>,
     input_name: String,
     device: Device,
 }
@@ -49,9 +52,10 @@ pub struct FaceDetector {
 impl FaceDetector {
     pub fn from_path(path: impl AsRef<Path>) -> Result<Self> {
         // CPU on purpose, even under `--features cuda`: candle-onnx's
-        // `simple_eval` materializes the graph's initializers (weights) on
-        // CPU, so a CUDA input tensor hits "device mismatch in conv2d".
-        // GPU execution for the ONNX path is future work (issue #17).
+        // per-op interpreter is kernel-launch/sync bound on GPU (measured
+        // *slower* than CPU for the small blendshape MLP). The realtime path
+        // instead runs FaceMesh on burn-wgpu (see `burn_mesh`), YuNet rarely
+        // (loss/interval redetect), and this stage's weights pre-extracted.
         let device = Device::Cpu;
         let model = candle_onnx::read_file(path.as_ref())?;
         let input_name = model
@@ -60,8 +64,13 @@ impl FaceDetector {
             .and_then(|g| g.input.first())
             .map(|i| i.name.clone())
             .ok_or_else(|| anyhow::anyhow!("YuNet detector model has no input"))?;
+        let consts = candle_onnx::initializer_tensors(&model)?
+            .into_iter()
+            .map(|(k, v)| Ok((k, v.to_device(&device)?)))
+            .collect::<candle_core::Result<HashMap<_, _>>>()?;
         Ok(Self {
             model,
+            consts,
             input_name,
             device,
         })
@@ -70,9 +79,9 @@ impl FaceDetector {
     /// Detect the most confident face, or `None`, in a packed-RGB8 frame.
     pub fn detect(&self, width: u32, height: u32, rgb: &[u8]) -> Result<Option<Detection>> {
         let (input, lb) = self.preprocess(width, height, rgb)?;
-        let mut inputs = HashMap::new();
+        let mut inputs = self.consts.clone();
         inputs.insert(self.input_name.clone(), input);
-        let outputs = candle_onnx::simple_eval(&self.model, inputs)?;
+        let outputs = candle_onnx::simple_eval_with_initializers(&self.model, inputs)?;
 
         let mut dets = Vec::new();
         for &s in &STRIDES {

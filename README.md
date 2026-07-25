@@ -50,7 +50,7 @@ swappable:
 | Stage | Module | Notes |
 |-------|--------|-------|
 | Capture | `capture::CameraSource` | `capture::native::NativeCamera` — AVFoundation on macOS, V4L2 on Linux (`Windows` planned), via `nokhwa`; synthetic `FakeCamera` for tests/headless |
-| Tracking (default) | `tracking::arkit::ArkitFaceTracker` | `mediapipe::MediapipeTracker` — **YuNet** detector → rotated eyes-aligned ROI → **FaceMesh V2** (478 3-D landmarks) → **Blendshape V2** (52 ARKit coefficients) + per-axis head rotation, on `candle-onnx` |
+| Tracking (default) | `tracking::arkit::ArkitFaceTracker` | `mediapipe::MediapipeTracker` — **YuNet** detector → rotated eyes-aligned ROI → **FaceMesh V2** (478 3-D landmarks, on **burn-wgpu** GPU with candle-onnx CPU fallback) → **Blendshape V2** (52 ARKit coefficients) + per-axis head rotation |
 | Tracking (`fan`) | `tracking::FaceTracker` | `fan::FanTracker` — the face-alignment **2DFAN4** net ported to pure-Rust **candle**, with `sfd::SfdDetector` (**S3FD**) auto-cropping first |
 | Mapping (default) | `mapping::arkit::ArkitMapper` | 52 ARKit coefficients + head pose → 10 avatar params, with per-channel neutral-baseline calibration (per-eye blink self-calibration so open→0, blink→1) and One-Euro smoothing |
 | Mapping (`fan`) | `mapping::Mapper` | iBUG-68 landmarks → the same 10 params via geometric ratios, clamped + smoothed |
@@ -145,12 +145,27 @@ time).
 
 ### Performance
 
-The default MediaPipe backend measured **~6.6 FPS on CPU** (16-core desktop,
-`--release`) — three ONNX graph evaluations per frame via `candle-onnx`'s
-interpreter. Usable for expression sync; GPU execution for this backend is a
-future optimization. Note the `cuda` feature does **not** accelerate this
-backend (candle-onnx's evaluator materializes weights on CPU, so the stack
-pins itself to CPU); `cuda` still applies to the FAN backend below.
+The default MediaPipe backend runs at **camera rate — measured 30 FPS**
+(640×480@30 webcam, `--release`, default features). Three things make that
+possible (issue #17):
+
+- **FaceMesh on burn-wgpu** (`mesh-gpu` feature, default ON): GPU via
+  Vulkan/Metal/DX12 with only a graphics driver — no CUDA toolkit. The
+  candle-onnx CPU interpreter measured ~105 ms/frame for this
+  depthwise-conv-heavy graph (and is kernel-launch-bound on CUDA), nowhere
+  near realtime; the burn executor uploads the weights to the GPU once at
+  load. No usable GPU → automatic fallback to the CPU stage (a few FPS).
+- **Async safety-net redetect**: YuNet (~216 ms on CPU) only reseeds the ROI —
+  it runs synchronously on the first frame and after losing the face, and
+  otherwise about once a second **on its own thread**, so the frame loop
+  never blocks on it. Between detections the ROI comes from the previous
+  frame's landmarks.
+- **Cached ONNX initializers** (fork addition): graph weights are extracted
+  once at load instead of being re-parsed from the proto every evaluation.
+
+The blendshape stage (~2 ms) stays on CPU. The `cuda` feature does **not**
+apply to this backend (see above — burn-wgpu is the GPU path here); `cuda`
+still accelerates the FAN backend below.
 
 The FAN backend: `candle` builds with no acceleration backend by default
 (CPU fallback only), which — combined with running the S3FD detector on every

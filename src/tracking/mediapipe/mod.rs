@@ -13,11 +13,15 @@
 //! — the richer, backend-independent signal `mapping::arkit` consumes,
 //! parallel to how [`super::fan::FanTracker`] implements [`super::FaceTracker`].
 //!
-//! Not ported: `burn_mesh.rs` (the optional GPU/wgpu FaceMesh path — out of
-//! scope, candle/CPU only here) and `gaze.rs` (iris gaze — out of scope for
-//! issue #17's OSC parameter set).
+//! The FaceMesh stage runs on **burn-wgpu** (GPU, driver-only; `burn_mesh`,
+//! ported from AvataCam #62) when the default `mesh-gpu` feature is on and a
+//! GPU is usable, falling back to the candle-onnx CPU path otherwise — the
+//! CPU interpreter alone can't reach the 30 FPS realtime bar. Not ported:
+//! `gaze.rs` (iris gaze — out of scope for issue #17's OSC parameter set).
 
 mod blendshape;
+#[cfg(feature = "mesh-gpu")]
+mod burn_mesh;
 mod detector;
 mod mesh;
 mod roi;
@@ -181,34 +185,107 @@ pub fn head_pose(points: &[[f32; 3]]) -> HeadPose {
 /// re-detects on the very next frame after losing the face, or when the
 /// tracked ROI has drifted off-frame, regardless of interval.
 pub struct MediapipeTracker {
-    detector: FaceDetector,
-    mesh: FaceMesh,
+    detector: std::sync::Arc<FaceDetector>,
+    mesh: MeshStage,
     blendshape: BlendshapeModel,
     detect_interval: u32,
     frame_index: u32,
     last_roi: Option<FaceRoi>,
+    /// In-flight async safety-net redetect (see [`ArkitFaceTracker::track`]):
+    /// the periodic YuNet pass (~216 ms on CPU) runs on its own thread so the
+    /// 30 FPS loop never blocks on it; only total loss detects synchronously.
+    pending_detect: Option<std::sync::mpsc::Receiver<Option<Detection>>>,
 }
+
+/// The FaceMesh stage backend: burn-wgpu (GPU, driver-only) when the
+/// `mesh-gpu` feature is on and a usable GPU is present, else the candle-onnx
+/// CPU path. GPU is what makes 30 FPS possible (the CPU interpreter measured
+/// ~109 ms/frame on this depthwise-heavy graph); CPU remains the fallback so
+/// machines without a GPU still track, just slower.
+// One long-lived instance per tracker; the variants' size gap is irrelevant.
+#[allow(clippy::large_enum_variant)]
+enum MeshStage {
+    Cpu(FaceMesh),
+    #[cfg(feature = "mesh-gpu")]
+    Gpu(burn_mesh::BurnFaceMesh),
+}
+
+impl MeshStage {
+    fn run(&self, width: u32, height: u32, rgb: &[u8], roi: &FaceRoi) -> Result<FaceMeshLandmarks> {
+        match self {
+            MeshStage::Cpu(m) => m.run(width, height, rgb, roi),
+            #[cfg(feature = "mesh-gpu")]
+            MeshStage::Gpu(m) => m.run(width, height, rgb, roi),
+        }
+    }
+
+    /// Human-readable stage backend name (for startup logging).
+    fn name(&self) -> &'static str {
+        match self {
+            MeshStage::Cpu(_) => "candle-cpu",
+            #[cfg(feature = "mesh-gpu")]
+            MeshStage::Gpu(_) => "burn-wgpu",
+        }
+    }
+}
+
+/// Default detector cadence: YuNet is only needed to (re)seed the ROI — the
+/// frames in between derive it from the previous frame's landmarks — so while
+/// tracking it re-runs at most about once a second (at ~30 FPS) as a safety
+/// net, mirroring AvataCam. Loss and off-frame drift always force an
+/// immediate redetect regardless of this.
+pub const DEFAULT_REDETECT_INTERVAL: u32 = 30;
 
 impl MediapipeTracker {
     /// Load the three ONNX models from explicit paths.
     ///
-    /// Always runs on CPU, including under `--features cuda`: candle-onnx's
-    /// `simple_eval` materializes graph weights on CPU, so GPU inputs would
-    /// mismatch. GPU execution for this backend is future work (issue #17);
-    /// the `cuda` feature still accelerates the FAN backend.
+    /// FaceMesh runs on burn-wgpu when built with the (default) `mesh-gpu`
+    /// feature and a GPU is usable, else on CPU. YuNet and the blendshape
+    /// model stay on CPU (cheap or rarely run); `--features cuda` is
+    /// irrelevant to this backend (it still accelerates the FAN backend).
     pub fn from_paths(
         detector: impl AsRef<Path>,
         landmark: impl AsRef<Path>,
         blendshape: impl AsRef<Path>,
     ) -> Result<Self> {
+        let mesh = Self::build_mesh_stage(landmark)?;
+        eprintln!("mediapipe: FaceMesh stage = {}", mesh.name());
         Ok(Self {
-            detector: FaceDetector::from_path(detector)?,
-            mesh: FaceMesh::from_path(landmark)?,
+            detector: std::sync::Arc::new(FaceDetector::from_path(detector)?),
+            mesh,
             blendshape: BlendshapeModel::from_path(blendshape)?,
-            detect_interval: 1,
+            detect_interval: DEFAULT_REDETECT_INTERVAL,
             frame_index: 0,
             last_roi: None,
+            pending_detect: None,
         })
+    }
+
+    /// Try the burn-wgpu GPU stage first (feature-gated), fall back to the
+    /// CPU stage on any failure — including a panic out of wgpu adapter
+    /// initialization on truly headless machines.
+    #[cfg(feature = "mesh-gpu")]
+    fn build_mesh_stage(landmark: impl AsRef<Path>) -> Result<MeshStage> {
+        let path = landmark.as_ref();
+        let gpu = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            burn_mesh::BurnFaceMesh::from_path(path)
+        }));
+        match gpu {
+            Ok(Ok(m)) => Ok(MeshStage::Gpu(m)),
+            Ok(Err(e)) => {
+                eprintln!("mediapipe: burn-wgpu FaceMesh unavailable ({e:#}) — using CPU");
+                Ok(MeshStage::Cpu(FaceMesh::from_path(path)?))
+            }
+            Err(_) => {
+                eprintln!("mediapipe: burn-wgpu init panicked (no GPU/driver?) — using CPU");
+                Ok(MeshStage::Cpu(FaceMesh::from_path(path)?))
+            }
+        }
+    }
+
+    #[cfg(not(feature = "mesh-gpu"))]
+    fn build_mesh_stage(landmark: impl AsRef<Path>) -> Result<MeshStage> {
+        Ok(MeshStage::Cpu(FaceMesh::from_path(landmark)?))
     }
 
     /// Load from the paths the app auto-downloads to (issue #17):
@@ -227,8 +304,8 @@ impl MediapipeTracker {
     }
 
     /// Only re-run the (expensive) YuNet detector every `n` frames (`n <= 1`
-    /// re-runs every frame, the default). See the [`MediapipeTracker`] doc
-    /// for the fallback behavior between detections.
+    /// re-runs every frame; default [`DEFAULT_REDETECT_INTERVAL`]). See the
+    /// [`MediapipeTracker`] doc for the fallback behavior between detections.
     pub fn with_detect_interval(mut self, n: u32) -> Self {
         self.detect_interval = n.max(1);
         self
@@ -255,20 +332,52 @@ impl ArkitFaceTracker for MediapipeTracker {
         let (w, h) = (frame.width, frame.height);
         let rgb = &frame.data;
 
+        // Fold in a finished async safety-net redetect, if any: a hit reseeds
+        // the ROI (the face barely moves in the ~0.2s the detect took, and
+        // the very next frame's landmarks re-center it anyway); a stale miss
+        // changes nothing — the presence gate below handles genuine loss.
+        if let Some(rx) = &self.pending_detect {
+            match rx.try_recv() {
+                Ok(Some(det)) => {
+                    self.last_roi = Some(face_roi(&det, w, h));
+                    self.pending_detect = None;
+                }
+                Ok(None) => self.pending_detect = None,
+                Err(std::sync::mpsc::TryRecvError::Empty) => {}
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => self.pending_detect = None,
+            }
+        }
+
         let tracked = self.last_roi;
         let due = self.frame_index.is_multiple_of(self.detect_interval);
         self.frame_index = self.frame_index.wrapping_add(1);
         let offframe = tracked.map(|r| !roi_in_frame(&r, w, h)).unwrap_or(false);
-        let need_redetect = tracked.is_none() || offframe || due;
 
-        let roi = if need_redetect {
-            let Some(det) = self.detector.detect(w, h, rgb)? else {
-                self.last_roi = None;
-                return Ok(None);
-            };
-            face_roi(&det, w, h)
-        } else {
-            tracked.unwrap()
+        let roi = match tracked {
+            // Tracking normally: never block on YuNet. When the periodic
+            // safety-net is due, kick it off on a thread and keep using the
+            // landmark-derived ROI meanwhile.
+            Some(r) if !offframe => {
+                if due && self.pending_detect.is_none() {
+                    let (tx, rx) = std::sync::mpsc::channel();
+                    let det = std::sync::Arc::clone(&self.detector);
+                    let buf = rgb.to_vec();
+                    std::thread::spawn(move || {
+                        let _ = tx.send(det.detect(w, h, &buf).ok().flatten());
+                    });
+                    self.pending_detect = Some(rx);
+                }
+                r
+            }
+            // First frame, or the face was lost / drifted off-frame: nothing
+            // to track from, so a synchronous detect is unavoidable.
+            _ => {
+                let Some(det) = self.detector.detect(w, h, rgb)? else {
+                    self.last_roi = None;
+                    return Ok(None);
+                };
+                face_roi(&det, w, h)
+            }
         };
 
         let lms = self.mesh.run(w, h, rgb, &roi)?;
@@ -444,5 +553,72 @@ mod head_pose_tests {
     fn degenerate_or_short_landmarks_return_default() {
         assert_eq!(head_pose(&[[0.0f32; 3]; 478]), HeadPose::default());
         assert_eq!(head_pose(&[[0.0f32; 3]; 10]), HeadPose::default());
+    }
+}
+
+#[cfg(test)]
+mod stage_bench {
+    use super::*;
+
+    /// Per-stage wall-clock bench on the real models + test photo. Ignored in
+    /// normal runs; execute with:
+    /// `cargo test --release stage_bench -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn bench_stages() {
+        let (det_p, mesh_p, bs_p) = (
+            "models/face_detection.onnx",
+            "models/face_landmarks.onnx",
+            "models/face_blendshapes.onnx",
+        );
+        if !std::path::Path::new(det_p).exists() {
+            eprintln!("models missing — skipping bench");
+            return;
+        }
+        let img = image::open("testdata/astronaut.png").unwrap().to_rgb8();
+        let (w, h) = (img.width(), img.height());
+        let rgb = img.into_raw();
+
+        let detector = FaceDetector::from_path(det_p).unwrap();
+        let mesh = mesh::FaceMesh::from_path(mesh_p).unwrap();
+        let bs = blendshape::BlendshapeModel::from_path(bs_p).unwrap();
+
+        let det = detector.detect(w, h, &rgb).unwrap().unwrap();
+        let roi = face_roi(&det, w, h);
+        let lms = mesh.run(w, h, &rgb, &roi).unwrap();
+
+        let time = |label: &str, mut f: Box<dyn FnMut()>| {
+            // Warmup.
+            f();
+            let n = 10;
+            let t0 = std::time::Instant::now();
+            for _ in 0..n {
+                f();
+            }
+            let ms = t0.elapsed().as_secs_f64() * 1000.0 / n as f64;
+            eprintln!("{label:>12}: {ms:8.2} ms");
+        };
+
+        let (d2, m2, b2) = (&detector, &mesh, &bs);
+        let (rgb2, lms2, roi2) = (rgb.clone(), lms.clone(), roi);
+        time(
+            "detector",
+            Box::new(move || {
+                d2.detect(w, h, &rgb2).unwrap();
+            }),
+        );
+        let rgb3 = rgb.clone();
+        time(
+            "facemesh",
+            Box::new(move || {
+                m2.run(w, h, &rgb3, &roi2).unwrap();
+            }),
+        );
+        time(
+            "blendshape",
+            Box::new(move || {
+                b2.run(&lms2, w, h).unwrap();
+            }),
+        );
     }
 }

@@ -27,6 +27,14 @@ candle-nn = { git = "https://github.com/m96-chan/candle", branch = "avatacam" }
 candle-onnx = { git = "https://github.com/m96-chan/candle", branch = "avatacam" }
 safetensors = "0.8"
 
+# GPU FaceMesh on burn-wgpu (Vulkan/Metal/DX12, driver-only — no CUDA
+# toolkit): candle-onnx's per-op interpreter can't reach 30 FPS for the
+# depthwise-heavy FaceMesh graph (~109 ms/frame CPU), so the realtime path
+# runs it on this executor instead (ported from AvataCam #62, issue #17).
+# Behind the default `mesh-gpu` feature; runtime falls back to the CPU stage
+# when no GPU/driver is present.
+burn = { version = "0.20", features = ["wgpu"], optional = true, default-features = false }
+
 # One-time model-weight download (issue #12): blocking GET + TLS + redirects,
 # no async runtime needed for a single startup download.
 ureq = { version = "2", features = ["tls"] }
@@ -36,10 +44,14 @@ ratatui = "0.29"
 crossterm = "0.28"
 
 [features]
-default = ["camera"]
+default = ["camera", "mesh-gpu"]
 # Enables the real webcam backend. Without it, only the synthetic FakeCamera is
 # available (used by tests and CI, which have no camera).
 camera = ["dep:nokhwa"]
+# GPU FaceMesh stage (burn-wgpu, driver-only — no vendor toolkit needed).
+# Default ON: it's what makes the MediaPipe backend realtime (30 FPS); the
+# tracker falls back to the CPU stage at runtime when no GPU is usable.
+mesh-gpu = ["dep:burn"]
 # Opt-in GPU inference (issue #13): NOT part of `default` — macOS has no CUDA
 # and most end users won't have an NVIDIA GPU + CUDA toolkit to build against.
 # `Device::cuda_if_available` (used by FanTracker/SfdDetector) already falls

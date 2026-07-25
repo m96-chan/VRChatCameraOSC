@@ -56,11 +56,12 @@ const FAN_MODEL_URL: &str =
 const SFD_MODEL_URL: &str =
     "https://github.com/m96-chan/VRChatCameraOSC/releases/download/models-v1/s3fd.safetensors";
 
-/// Default detector re-run interval (issue #13): the S3FD detector is the
-/// dominant per-frame cost, and a face doesn't move far in a handful of
-/// frames, so it's only re-run this often; landmarks-derived crops carry
-/// tracking through the frames in between.
-const DEFAULT_DETECT_INTERVAL: u32 = 8;
+/// Default FAN-backend detector re-run interval (issue #13): S3FD is the
+/// dominant per-frame cost there, so it's only re-run this often;
+/// landmarks-derived crops carry tracking through the frames in between.
+/// The MediaPipe backend has its own default
+/// (`tracking::mediapipe::DEFAULT_REDETECT_INTERVAL`, ~once a second).
+const FAN_DEFAULT_DETECT_INTERVAL: u32 = 8;
 
 /// Default neutral-pose calibration window (issue #15): captured once at
 /// startup (and again on demand via `c` in the TUI), assuming the subject
@@ -73,7 +74,8 @@ struct Args {
     frames: Option<u64>,
     weights: PathBuf,
     detector: PathBuf,
-    detect_interval: u32,
+    /// `None` = per-backend default (FAN 8, MediaPipe ~30).
+    detect_interval: Option<u32>,
     calibrate_frames: u32,
     /// CLI override for `tracking.backend` (`--backend mediapipe|fan`).
     backend: Option<TrackingBackend>,
@@ -86,7 +88,7 @@ fn parse_args() -> Args {
         frames: None,
         weights: default_weights_path(),
         detector: default_detector_path(),
-        detect_interval: DEFAULT_DETECT_INTERVAL,
+        detect_interval: None,
         calibrate_frames: DEFAULT_CALIBRATE_FRAMES,
         backend: None,
     };
@@ -108,7 +110,7 @@ fn parse_args() -> Args {
             }
             "--detect-interval" => {
                 if let Some(n) = it.next().and_then(|v| v.parse().ok()) {
-                    a.detect_interval = n;
+                    a.detect_interval = Some(n);
                 }
             }
             "--calibrate-frames" => {
@@ -196,8 +198,9 @@ fn ensure_default_model_present(path: &Path, default: &Path, url: &str) {
 fn build_tracker(
     weights: &PathBuf,
     detector_path: &PathBuf,
-    detect_interval: u32,
+    detect_interval: Option<u32>,
 ) -> Option<Box<dyn FaceTracker>> {
+    let detect_interval = detect_interval.unwrap_or(FAN_DEFAULT_DETECT_INTERVAL);
     ensure_default_model_present(weights, &default_weights_path(), FAN_MODEL_URL);
     ensure_default_model_present(detector_path, &default_detector_path(), SFD_MODEL_URL);
 
@@ -243,7 +246,7 @@ fn build_tracker(
 /// Build the MediaPipe (ARKit-blendshape) tracker — issue #17. Auto-downloads
 /// the three ONNX models on first run, mirroring [`build_tracker`]'s handling
 /// of the FAN/S3FD weights.
-fn build_arkit_tracker(detect_interval: u32) -> Option<Box<dyn ArkitFaceTracker>> {
+fn build_arkit_tracker(detect_interval: Option<u32>) -> Option<Box<dyn ArkitFaceTracker>> {
     let detection = models::default_face_detection_path();
     let landmarks = models::default_face_landmarks_path();
     let blendshapes = models::default_face_blendshapes_path();
@@ -264,7 +267,13 @@ fn build_arkit_tracker(detect_interval: u32) -> Option<Box<dyn ArkitFaceTracker>
     );
 
     match MediapipeTracker::from_paths(&detection, &landmarks, &blendshapes) {
-        Ok(t) => Some(Box::new(t.with_detect_interval(detect_interval))),
+        Ok(t) => {
+            let t = match detect_interval {
+                Some(n) => t.with_detect_interval(n),
+                None => t, // keep the backend default (~once a second)
+            };
+            Some(Box::new(t))
+        }
         Err(e) => {
             eprintln!(
                 "failed to load the MediaPipe face stack: {e:#}\n\
@@ -304,7 +313,7 @@ fn main() -> Result<()> {
     calibrate_neutral(&mut pipeline, args.calibrate_frames);
 
     if args.monitor {
-        run_monitor(pipeline, &cfg, args.frames)
+        run_monitor(pipeline, &cfg, args.frames, args.fake)
     } else {
         run_tui(pipeline, &cfg, args.calibrate_frames)
     }
@@ -331,7 +340,12 @@ fn calibrate_neutral(pipeline: &mut Pipeline, frames: u32) {
 }
 
 /// Headless: step the pipeline and print the OSC parameters each frame.
-fn run_monitor(mut pipeline: Pipeline, cfg: &Config, frames: Option<u64>) -> Result<()> {
+fn run_monitor(
+    mut pipeline: Pipeline,
+    cfg: &Config,
+    frames: Option<u64>,
+    fake_paced: bool,
+) -> Result<()> {
     println!(
         "monitor: {} -> {}:{}{}",
         if cfg.osc.dry_run {
@@ -369,7 +383,13 @@ fn run_monitor(mut pipeline: Pipeline, cfg: &Config, frames: Option<u64>) -> Res
                 break;
             }
         }
-        std::thread::sleep(Duration::from_millis(16));
+        // A real camera paces the loop itself (next_frame blocks at the
+        // camera's rate); sleeping on top of that just subtracts from the
+        // achievable FPS (16ms extra capped the loop at ~20 FPS on a 30 FPS
+        // camera). Only the synthetic FakeCamera needs artificial pacing.
+        if fake_paced {
+            std::thread::sleep(Duration::from_millis(16));
+        }
     }
     Ok(())
 }

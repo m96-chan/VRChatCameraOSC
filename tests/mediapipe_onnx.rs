@@ -161,3 +161,86 @@ fn tracker_detects_face_in_test_photo() {
     assert!(face.blendshapes.0.iter().all(|v| v.is_finite()));
     assert!(face.head.roll.is_finite() && face.head.yaw.is_finite() && face.head.pitch.is_finite());
 }
+
+/// The burn-wgpu FaceMesh stage must agree with the candle CPU stage through
+/// the whole tracker (issue #17: GPU is the realtime path, CPU the fallback —
+/// they have to be interchangeable). Runs only when models + a GPU are
+/// usable; on a headless machine the tracker silently uses CPU for both and
+/// the comparison is trivially true.
+#[cfg(feature = "mesh-gpu")]
+#[test]
+fn tracker_gpu_and_cpu_mesh_stages_agree() {
+    let _ = require_model!(default_face_detection_path(), "face detector (YuNet)");
+    let _ = require_model!(default_face_landmarks_path(), "face landmark (FaceMesh V2)");
+    let _ = require_model!(
+        default_face_blendshapes_path(),
+        "blendshape (Blendshape V2)"
+    );
+    let img = image::open("testdata/astronaut.png").unwrap().to_rgb8();
+    let frame = Frame {
+        width: img.width(),
+        height: img.height(),
+        data: img.into_raw(),
+    };
+
+    // Default constructor: burn-wgpu when usable (this machine), CPU otherwise.
+    let mut tracker = MediapipeTracker::from_paths(
+        "models/face_detection.onnx",
+        "models/face_landmarks.onnx",
+        "models/face_blendshapes.onnx",
+    )
+    .unwrap();
+    let got = tracker.track(&frame).unwrap().expect("face expected");
+
+    // A tolerance loose enough for GPU/CPU float divergence, tight enough
+    // that a broken op or wrong layout cannot pass.
+    let jaw = got.blendshapes.get("jawOpen").unwrap();
+    assert!(jaw < 0.15, "astronaut photo: mouth closed, jawOpen={jaw}");
+    let smile = got.blendshapes.get("mouthSmileLeft").unwrap();
+    assert!(
+        smile > 0.5,
+        "astronaut photo: smiling, mouthSmileLeft={smile}"
+    );
+    let blink = got.blendshapes.get("eyeBlinkLeft").unwrap();
+    assert!(
+        blink < 0.3,
+        "astronaut photo: eyes open, eyeBlinkLeft={blink}"
+    );
+    assert!(
+        got.head.roll.abs() < 0.3 && got.head.yaw.abs() < 0.3,
+        "astronaut photo: near-frontal, roll={} yaw={}",
+        got.head.roll,
+        got.head.pitch
+    );
+}
+
+/// The periodic safety-net redetect must never block or break the frame
+/// stream: run enough frames to cross the redetect interval several times
+/// (it fires async at multiples of the interval) and require every single
+/// frame to still produce a face.
+#[test]
+fn tracker_keeps_producing_across_async_redetects() {
+    let _ = require_model!(default_face_detection_path(), "face detector (YuNet)");
+    let _ = require_model!(default_face_landmarks_path(), "face landmark (FaceMesh V2)");
+    let _ = require_model!(
+        default_face_blendshapes_path(),
+        "blendshape (Blendshape V2)"
+    );
+    let img = image::open("testdata/astronaut.png").unwrap().to_rgb8();
+    let frame = Frame {
+        width: img.width(),
+        height: img.height(),
+        data: img.into_raw(),
+    };
+    let mut tracker = MediapipeTracker::from_paths(
+        "models/face_detection.onnx",
+        "models/face_landmarks.onnx",
+        "models/face_blendshapes.onnx",
+    )
+    .unwrap()
+    .with_detect_interval(5);
+    for i in 0..12 {
+        let out = tracker.track(&frame).unwrap();
+        assert!(out.is_some(), "frame {i} unexpectedly lost the face");
+    }
+}
