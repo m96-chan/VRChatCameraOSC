@@ -50,8 +50,8 @@ pub fn crop(image: &RgbImage, center: (f32, f32), scale: f32, resolution: u32) -
     let ul = transform((1.0, 1.0), center, scale, res_f, true);
     let br = transform((res_f, res_f), center, scale, res_f, true);
 
-    let new_w = (br.0 - ul.0) as i64;
-    let new_h = (br.1 - ul.1) as i64;
+    let new_w = br.0 - ul.0;
+    let new_h = br.1 - ul.1;
     let (img_w, img_h) = (image.width() as i64, image.height() as i64);
 
     let mut canvas = RgbImage::new(new_w.max(1) as u32, new_h.max(1) as u32);

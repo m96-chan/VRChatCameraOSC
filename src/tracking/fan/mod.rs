@@ -38,22 +38,54 @@ pub fn box_to_center_scale(b: &BoundingBox) -> ((f32, f32), f32) {
     ((cx, cy), scale)
 }
 
+/// The axis-aligned bounding rect of a landmark set, used as the crop box for
+/// frames where the detector is skipped (see [`FanTracker::with_detect_interval`]).
+fn bbox_from_landmarks(lms: &FaceLandmarks) -> BoundingBox {
+    let (mut x1, mut y1) = (f32::MAX, f32::MAX);
+    let (mut x2, mut y2) = (f32::MIN, f32::MIN);
+    for p in &lms.points {
+        x1 = x1.min(p.x);
+        y1 = y1.min(p.y);
+        x2 = x2.max(p.x);
+        y2 = y2.max(p.y);
+    }
+    BoundingBox {
+        x1,
+        y1,
+        x2,
+        y2,
+        score: 1.0,
+    }
+}
+
 /// A [`FaceTracker`] backed by the FAN network.
 ///
 /// With a detector attached, [`FanTracker::track`] detects the face, crops
 /// around it (reference `crop`), runs FAN, and maps landmarks back to image
 /// pixels. Without one, it falls back to treating the whole frame as the face
 /// (resize to 256) — fine when the face fills the frame.
+///
+/// The detector is the dominant per-frame cost (issue #13): a face doesn't
+/// move far in 1/30s, so it only re-runs every [`FanTracker::with_detect_interval`]
+/// frames; on the frames in between, the crop box is derived from the
+/// *previous frame's* FAN landmarks instead. It always re-detects on the very
+/// next frame after losing the face (no current box), regardless of interval.
 pub struct FanTracker {
     model: Fan,
     device: Device,
     detector: Option<Box<dyn FaceDetector>>,
+    detect_interval: u32,
+    frame_index: u32,
+    last_box: Option<BoundingBox>,
 }
 
 impl FanTracker {
     /// Load a tracker from a safetensors weights file. No detector (whole-frame).
+    ///
+    /// Runs on GPU when built with the `cuda` feature and a device is found
+    /// (`Device::cuda_if_available` falls back to CPU otherwise — see #13).
     pub fn from_safetensors(path: impl AsRef<std::path::Path>) -> CandleResult<Self> {
-        let device = Device::Cpu;
+        let device = Device::cuda_if_available(0)?;
         let vb = unsafe {
             VarBuilder::from_mmaped_safetensors(&[path.as_ref()], candle_core::DType::F32, &device)?
         };
@@ -62,6 +94,9 @@ impl FanTracker {
             model,
             device,
             detector: None,
+            detect_interval: 1,
+            frame_index: 0,
+            last_box: None,
         })
     }
 
@@ -71,12 +106,23 @@ impl FanTracker {
             model,
             device,
             detector: None,
+            detect_interval: 1,
+            frame_index: 0,
+            last_box: None,
         }
     }
 
     /// Attach a face detector so `track` auto-crops around the detected face.
     pub fn with_detector(mut self, detector: Box<dyn FaceDetector>) -> Self {
         self.detector = Some(detector);
+        self
+    }
+
+    /// Only re-run the detector every `n` frames (`n <= 1` re-runs every
+    /// frame, the default). See the [`FanTracker`] doc for the fallback
+    /// behavior between detections.
+    pub fn with_detect_interval(mut self, n: u32) -> Self {
+        self.detect_interval = n.max(1);
         self
     }
 
@@ -140,12 +186,32 @@ impl FaceTracker for FanTracker {
         let img = RgbImage::from_raw(frame.width, frame.height, frame.data.clone())
             .ok_or_else(|| anyhow::anyhow!("frame buffer did not match dimensions"))?;
 
-        // With a detector: detect, take the highest-scoring face, crop around it.
+        // With a detector: detect (throttled, see `with_detect_interval`), take
+        // the highest-scoring face, crop around it.
         if let Some(detector) = self.detector.as_ref() {
-            let boxes = detector.detect(&img)?;
-            return match boxes.iter().max_by(|a, b| a.score.total_cmp(&b.score)) {
-                Some(best) => Ok(Some(self.landmarks_in_image(&img, best)?)),
-                None => Ok(None),
+            let due = self.frame_index.is_multiple_of(self.detect_interval);
+            self.frame_index = self.frame_index.wrapping_add(1);
+
+            let bbox = if self.last_box.is_none() || due {
+                let boxes = detector.detect(&img)?;
+                boxes
+                    .iter()
+                    .max_by(|a, b| a.score.total_cmp(&b.score))
+                    .copied()
+            } else {
+                self.last_box
+            };
+
+            return match bbox {
+                Some(b) => {
+                    let lms = self.landmarks_in_image(&img, &b)?;
+                    self.last_box = Some(bbox_from_landmarks(&lms));
+                    Ok(Some(lms))
+                }
+                None => {
+                    self.last_box = None;
+                    Ok(None)
+                }
             };
         }
 

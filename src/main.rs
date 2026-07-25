@@ -52,12 +52,19 @@ const FAN_MODEL_URL: &str =
 const SFD_MODEL_URL: &str =
     "https://github.com/m96-chan/VRChatCameraOSC/releases/download/models-v1/s3fd.safetensors";
 
+/// Default detector re-run interval (issue #13): the S3FD detector is the
+/// dominant per-frame cost, and a face doesn't move far in a handful of
+/// frames, so it's only re-run this often; landmarks-derived crops carry
+/// tracking through the frames in between.
+const DEFAULT_DETECT_INTERVAL: u32 = 8;
+
 struct Args {
     monitor: bool,
     fake: bool,
     frames: Option<u64>,
     weights: PathBuf,
     detector: PathBuf,
+    detect_interval: u32,
 }
 
 fn parse_args() -> Args {
@@ -67,6 +74,7 @@ fn parse_args() -> Args {
         frames: None,
         weights: default_weights_path(),
         detector: default_detector_path(),
+        detect_interval: DEFAULT_DETECT_INTERVAL,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -84,10 +92,16 @@ fn parse_args() -> Args {
                     a.detector = PathBuf::from(p);
                 }
             }
+            "--detect-interval" => {
+                if let Some(n) = it.next().and_then(|v| v.parse().ok()) {
+                    a.detect_interval = n;
+                }
+            }
             "-h" | "--help" => {
                 println!(
                     "vrchat-camera-osc [--monitor] [--fake] [--frames N] \
-                     [--weights FAN.safetensors] [--detector S3FD.safetensors]"
+                     [--weights FAN.safetensors] [--detector S3FD.safetensors] \
+                     [--detect-interval N]"
                 );
                 std::process::exit(0);
             }
@@ -152,7 +166,11 @@ fn ensure_default_model_present(path: &Path, default: &Path, url: &str) {
     }
 }
 
-fn build_tracker(weights: &PathBuf, detector_path: &PathBuf) -> Option<Box<dyn FaceTracker>> {
+fn build_tracker(
+    weights: &PathBuf,
+    detector_path: &PathBuf,
+    detect_interval: u32,
+) -> Option<Box<dyn FaceTracker>> {
     ensure_default_model_present(weights, &default_weights_path(), FAN_MODEL_URL);
     ensure_default_model_present(detector_path, &default_detector_path(), SFD_MODEL_URL);
 
@@ -177,7 +195,9 @@ fn build_tracker(weights: &PathBuf, detector_path: &PathBuf) -> Option<Box<dyn F
     if detector_path.exists() {
         match SfdDetector::from_safetensors(detector_path) {
             Ok(det) => {
-                tracker = tracker.with_detector(Box::new(det));
+                tracker = tracker
+                    .with_detector(Box::new(det))
+                    .with_detect_interval(detect_interval);
             }
             Err(e) => eprintln!(
                 "failed to load detector {}: {e} — using whole-frame tracking",
@@ -203,7 +223,7 @@ fn main() -> Result<()> {
     cfg.validate()?;
 
     let camera = build_camera(&cfg, args.fake);
-    let tracker = build_tracker(&args.weights, &args.detector);
+    let tracker = build_tracker(&args.weights, &args.detector, args.detect_interval);
     let mapper = Mapper::with_smoothing(cfg.tracking.smoothing);
     let sink = build_sink(&cfg)?;
     let pipeline = Pipeline::new(camera, tracker, mapper, sink);

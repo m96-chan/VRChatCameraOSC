@@ -33,6 +33,12 @@ default = ["camera"]
 # Enables the real webcam backend. Without it, only the synthetic FakeCamera is
 # available (used by tests and CI, which have no camera).
 camera = ["dep:nokhwa"]
+# Opt-in GPU inference (issue #13): NOT part of `default` — macOS has no CUDA
+# and most end users won't have an NVIDIA GPU + CUDA toolkit to build against.
+# `Device::cuda_if_available` (used by FanTracker/SfdDetector) already falls
+# back to CPU cleanly when this feature is off or no GPU is found, so this is
+# purely an opt-in speedup, never a requirement.
+cuda = ["candle-core/cuda", "candle-nn/cuda"]
 
 # Camera capture, via nokhwa — backend picked per target OS so each platform
 # only pulls in the native dependency it needs. Optional so the rest of the

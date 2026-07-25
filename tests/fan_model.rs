@@ -100,6 +100,56 @@ fn landmarks_in_image_maps_to_image_space() {
 }
 
 #[test]
+fn detect_interval_skips_detector_calls_between_frames() {
+    // issue #13: the detector is the dominant per-frame cost, so it should
+    // only run every `detect_interval` frames; landmarks-derived crops carry
+    // the tracker through the frames in between.
+    use std::cell::Cell;
+    use std::rc::Rc;
+    use vrchat_camera_osc::tracking::detect::{BoundingBox, FaceDetector};
+
+    struct CountingDetector {
+        calls: Rc<Cell<u32>>,
+        bbox: BoundingBox,
+    }
+    impl FaceDetector for CountingDetector {
+        fn detect(&self, _image: &RgbImage) -> anyhow::Result<Vec<BoundingBox>> {
+            self.calls.set(self.calls.get() + 1);
+            Ok(vec![self.bbox])
+        }
+    }
+
+    let device = Device::Cpu;
+    let (_vm, model) = random_fan(&device);
+    let calls = Rc::new(Cell::new(0));
+    let detector = CountingDetector {
+        calls: calls.clone(),
+        bbox: BoundingBox {
+            x1: 50.0,
+            y1: 50.0,
+            x2: 200.0,
+            y2: 220.0,
+            score: 0.9,
+        },
+    };
+    let mut tracker = FanTracker::new(model, device)
+        .with_detector(Box::new(detector))
+        .with_detect_interval(3);
+
+    let frame = Frame::new(320, 240, vec![128u8; 320 * 240 * 3]).unwrap();
+
+    for _ in 0..7 {
+        tracker
+            .track(&frame)
+            .unwrap()
+            .expect("stub detector always finds a face");
+    }
+
+    // Frames are 0-indexed; due on frame_index % 3 == 0 => frames 0, 3, 6.
+    assert_eq!(calls.get(), 3, "expected detect on frames 0, 3, 6 only");
+}
+
+#[test]
 fn crop_and_input_tensor() {
     // crop() to the network input size, then pack to a normalised tensor.
     let mut img = RgbImage::new(200, 200);

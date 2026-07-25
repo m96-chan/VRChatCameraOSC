@@ -97,10 +97,34 @@ uv pip install --python .venv "torch>=2.2" "numpy<2" safetensors face-alignment 
 
 CLI flags: `--monitor` (headless), `--fake` (synthetic camera), `--frames N`
 (stop after N frames), `--weights PATH`, `--detector PATH` (a custom
-`--weights`/`--detector` path is never auto-downloaded).
+`--weights`/`--detector` path is never auto-downloaded), `--detect-interval N`
+(see Performance below).
 
 VRChat must have **OSC enabled** (Action Menu → Options → OSC → Enabled) for the
 end-to-end avatar path.
+
+### Performance
+
+`candle` builds with no acceleration backend by default (CPU fallback only),
+which — combined with running the S3FD detector on every frame — measured
+**~0.5 FPS** on a 16-core desktop CPU (issue #13). Two independent
+optimizations address this:
+
+- **Detect-then-track (always on, default `--detect-interval 8`):** the S3FD
+  detector is by far the most expensive stage, and a face doesn't move far
+  frame-to-frame, so it only re-runs every `detect_interval` frames; the
+  frames in between derive their crop box from the previous frame's FAN
+  landmarks instead. It always re-detects immediately after losing the face,
+  regardless of interval. This alone roughly **doubles** throughput on CPU
+  (S3FD's ~1.3s/frame vs. FAN's ~0.6s/frame, measured on the reference
+  hardware above).
+- **Opt-in `cuda` feature:** `cargo build --release --features cuda` runs
+  inference on an NVIDIA GPU (`Device::cuda_if_available` — falls back to CPU
+  automatically when the feature is off or no GPU is found). Requires the
+  CUDA toolkit to *build*, not to run a non-cuda build. Measured **~29.5 FPS**
+  (capture-rate-limited) on an RTX 5090, vs. ~0.5 FPS CPU-only — **not**
+  part of `default`, since macOS has no CUDA and most end users won't have an
+  NVIDIA GPU + toolkit to build against.
 
 ## Configuration
 

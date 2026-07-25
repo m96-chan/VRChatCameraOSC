@@ -28,9 +28,11 @@ pub struct SfdDetector {
 
 impl SfdDetector {
     /// Load detector weights from a safetensors file (exported by the reference
-    /// harness). Runs on CPU.
+    /// harness). Runs on GPU when built with the `cuda` feature and a device
+    /// is found (`Device::cuda_if_available` falls back to CPU otherwise —
+    /// see #13).
     pub fn from_safetensors(path: impl AsRef<std::path::Path>) -> CandleResult<Self> {
-        let device = Device::Cpu;
+        let device = Device::cuda_if_available(0)?;
         let vb =
             unsafe { VarBuilder::from_mmaped_safetensors(&[path.as_ref()], DType::F32, &device)? };
         let model = S3fd::load(vb)?;
