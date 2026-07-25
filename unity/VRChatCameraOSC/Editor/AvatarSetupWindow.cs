@@ -33,6 +33,7 @@ namespace VRChatCameraOsc.AvatarSetup
         readonly Dictionary<string, SkinnedMeshRenderer> _negativeRenderer = new Dictionary<string, SkinnedMeshRenderer>();
         readonly Dictionary<string, string> _negativeBlendShape = new Dictionary<string, string>();
         bool _includeHeadPose = true;
+        bool _pendingAutoFill;
         Vector2 _scroll;
 
         [MenuItem("VRChatCameraOSC/Avatar Setup Wizard")]
@@ -55,6 +56,7 @@ namespace VRChatCameraOsc.AvatarSetup
                 _positiveBlendShape.Clear();
                 _negativeRenderer.Clear();
                 _negativeBlendShape.Clear();
+                _pendingAutoFill = true;
             }
 
             if (_avatar == null)
@@ -75,6 +77,18 @@ namespace VRChatCameraOsc.AvatarSetup
             if (renderers.Length == 0)
             {
                 EditorGUILayout.HelpBox("No SkinnedMeshRenderer with blend shapes found under this avatar.", MessageType.Warning);
+            }
+
+            if (_pendingAutoFill)
+            {
+                _pendingAutoFill = false;
+                AutoFillFromBody(renderers);
+            }
+
+            EditorGUILayout.Space();
+            if (GUILayout.Button("Auto-fill from Body mesh (best-effort guess, review before Apply)"))
+            {
+                AutoFillFromBody(renderers);
             }
 
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
@@ -132,6 +146,62 @@ namespace VRChatCameraOsc.AvatarSetup
                 return 0;
             }
             return OscParameterSpec.All.Count(s => OscAnimatorLayerBuilder.HasLayer(controller, s.Name));
+        }
+
+        /// <summary>
+        /// Best-effort auto-suggestion (issue #16 follow-up): guesses blend
+        /// shapes from the avatar's main face mesh (see
+        /// <see cref="BlendShapeAutoMatcher.FindBodyRenderer"/>) by common
+        /// naming convention. Only fills parameters that aren't already
+        /// picked, so it never clobbers a manual choice — safe to click
+        /// again after changing renderers/blend shapes.
+        /// </summary>
+        void AutoFillFromBody(SkinnedMeshRenderer[] renderers)
+        {
+            var body = BlendShapeAutoMatcher.FindBodyRenderer(renderers);
+            if (body == null)
+            {
+                return;
+            }
+
+            foreach (var spec in OscParameterSpec.All)
+            {
+                if (spec.Kind == OscParamKind.HeadPose)
+                {
+                    continue;
+                }
+
+                if (spec.Kind == OscParamKind.SignedBlendShape)
+                {
+                    if (!_positiveRenderer.ContainsKey(spec.Name))
+                    {
+                        var positive = BlendShapeAutoMatcher.FindBlendShape(body, BlendShapeAutoMatcher.MouthWidePositiveKeywords);
+                        if (positive != null)
+                        {
+                            _positiveRenderer[spec.Name] = body;
+                            _positiveBlendShape[spec.Name] = positive;
+                        }
+                    }
+                    if (!_negativeRenderer.ContainsKey(spec.Name))
+                    {
+                        var negative = BlendShapeAutoMatcher.FindBlendShape(body, BlendShapeAutoMatcher.MouthWideNegativeKeywords);
+                        if (negative != null)
+                        {
+                            _negativeRenderer[spec.Name] = body;
+                            _negativeBlendShape[spec.Name] = negative;
+                        }
+                    }
+                }
+                else if (!_positiveRenderer.ContainsKey(spec.Name))
+                {
+                    var shape = BlendShapeAutoMatcher.FindBlendShapeForParam(body, spec.Name);
+                    if (shape != null)
+                    {
+                        _positiveRenderer[spec.Name] = body;
+                        _positiveBlendShape[spec.Name] = shape;
+                    }
+                }
+            }
         }
 
         void DrawBlendShapePicker(OscParamSpec spec, SkinnedMeshRenderer[] renderers)

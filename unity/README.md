@@ -44,13 +44,22 @@ folder in first.)
 ## Use
 
 1. `VRChatCameraOSC > Avatar Setup Wizard` (menu bar).
-2. Drag in your avatar's `VRCAvatarDescriptor`. Must be Humanoid.
-3. For each expression parameter (`MouthOpen`, `EyeBlinkLeft`, `EyeBlinkRight`,
-   `BrowUpLeft`, `BrowUpRight`, `MouthSmile`, `MouthWide`), pick the
-   `SkinnedMeshRenderer` + blend shape that should react, or leave it on
-   `(skip)`. `MouthWide` is signed (`-1..1`): a positive shape (wide/grin) and
-   an optional negative shape (pucker) — leaving the negative one on `(skip)`
-   is fine if your avatar doesn't have one.
+2. Drag in your avatar's `VRCAvatarDescriptor`. Must be Humanoid. Selecting an
+   avatar automatically runs a best-effort **auto-fill**: it picks the
+   `SkinnedMeshRenderer` most likely to be the main face mesh (one named
+   exactly "Body", else one containing "body", else whichever has the most
+   blend shapes) and guesses each parameter's blend shape by common naming
+   convention (VRM `Fcl_*`, `vrc.blink_left`-style, `BrowUp_L`/`_R`, plain
+   English like `Smile`/`MouthOpen`). Re-run it anytime with the **"Auto-fill
+   from Body mesh"** button — it only fills pickers still on `(skip)`, so it
+   never overwrites a manual choice.
+3. **Review every picker** — auto-fill is a guess, not a guarantee. For each
+   expression parameter (`MouthOpen`, `EyeBlinkLeft`, `EyeBlinkRight`,
+   `BrowUpLeft`, `BrowUpRight`, `MouthSmile`, `MouthWide`), confirm or change
+   the `SkinnedMeshRenderer` + blend shape, or set it to `(skip)`. `MouthWide`
+   is signed (`-1..1`): a positive shape (wide/grin) and an optional negative
+   shape (pucker) — leaving the negative one on `(skip)` is fine if your
+   avatar doesn't have one.
 4. Leave "wire head pose" checked (default) to also drive the head bone.
 5. The button at the bottom is a single **ON/OFF toggle** reflecting whether
    this avatar currently has all 10 parameters wired:
