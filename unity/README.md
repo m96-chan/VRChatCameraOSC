@@ -25,9 +25,21 @@ It does **not**:
 
 ## Install
 
-Copy (or add as a local/git-referenced UPM package via the VRChat Creator
-Companion) this `unity/` folder into your VRChat SDK3 avatar project's
-`Packages/` directory, alongside `com.vrchat.base` and `com.vrchat.avatars`.
+Distributed as a plain `Assets/`-folder drop-in (`.unitypackage`), not a UPM
+package — copy `VRChatCameraOSC/` into your VRChat SDK3 avatar project's
+`Assets/` folder (or double-click an exported `VRChatCameraOSC.unitypackage`
+and import). No VCC/manifest.json editing needed.
+
+To (re)generate the `.unitypackage` from this folder (end users don't need
+the `Tests/` folder, so only `Editor/` is exported):
+
+```bash
+Unity -batchmode -quit -projectPath <a VRC SDK3 project> \
+  -exportPackage Assets/VRChatCameraOSC/Editor VRChatCameraOSC.unitypackage
+```
+
+(`Assets/VRChatCameraOSC` must already exist in that project — copy this
+folder in first.)
 
 ## Use
 
@@ -58,10 +70,10 @@ Companion) this `unity/` folder into your VRChat SDK3 avatar project's
 
 ## Design notes
 
-- **Single source of truth for the 10 parameters**: `Editor/OscParameterSpec.cs`
-  mirrors `PARAM_NAMES`/`PARAM_RANGES` in the Rust app's `src/mapping/mod.rs`
-  (issue #14). Keep the two in sync by hand — there's no automated check
-  across the Rust/C# boundary.
+- **Single source of truth for the 10 parameters**:
+  `VRChatCameraOSC/Editor/OscParameterSpec.cs` mirrors `PARAM_NAMES`/`PARAM_RANGES`
+  in the Rust app's `src/mapping/mod.rs` (issue #14). Keep the two in sync by
+  hand — there's no automated check across the Rust/C# boundary.
 - **Idempotent by construction**: every generated Animator layer is named
   `OSC_<ParamName>`; re-running the wizard removes and replaces its own
   layers instead of appending duplicates. Same for Expression Parameters —
@@ -72,6 +84,8 @@ Companion) this `unity/` folder into your VRChat SDK3 avatar project's
 
 ## Tests
 
-`Tests/Editor/` (Unity Test Framework, EditMode) covers the Expression
-Parameters merge logic and the Animator layer builder against synthetic
-Humanoid/blend-shape data — no real avatar asset required to run them.
+`VRChatCameraOSC/Tests/Editor/` (Unity Test Framework, EditMode) covers the
+Expression Parameters merge logic and the Animator layer builder against
+synthetic Humanoid/blend-shape data — no real avatar asset required to run
+them. Not included in the exported `.unitypackage` (end users don't need
+them); only export `Assets/VRChatCameraOSC/Editor`.
