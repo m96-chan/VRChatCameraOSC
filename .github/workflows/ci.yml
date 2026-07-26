@@ -32,6 +32,27 @@ jobs:
       - name: Test
         run: cargo test
 
+  # Windows build gate (issue #11): the MediaFoundation capture backend has no
+  # Windows dev machine to verify against, so CI is what proves the default
+  # feature set (camera + mesh-gpu) builds and tests green on Windows. Same
+  # feature policy as `test` above: default features only, no `cuda` (needs
+  # the CUDA toolkit to build). The camera-dependent paths are ignored/skipped
+  # tests here just like on the other runners (no webcam in CI).
+  test-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # candle-onnx (m96-chan/candle fork) generates its protobuf bindings
+      # at build time via prost-build, which needs the `protoc` binary.
+      - name: Install protoc
+        run: choco install protoc --yes
+      - name: Build
+        run: cargo build
+      - name: Test
+        run: cargo test
+
   coverage:
     runs-on: macos-latest
     steps:

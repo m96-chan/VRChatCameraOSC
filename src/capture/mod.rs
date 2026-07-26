@@ -7,8 +7,8 @@
 //! - [`convert`] — pure pixel-buffer -> [`Frame`] helpers (unit-tested with
 //!   synthetic buffers; no camera required).
 //! - [`fps`] — an injectable-time FPS counter for the realtime loop / TUI.
-//! - `native` — the real backend (AVFoundation on macOS, V4L2 on Linux;
-//!   `camera` feature only).
+//! - `native` — the real backend (AVFoundation on macOS, V4L2 on Linux,
+//!   MediaFoundation on Windows; `camera` feature only).
 //!
 //! Platform-specific code stays behind [`CameraSource`] so other OS backends
 //! slot in without churn.
@@ -19,7 +19,10 @@ pub mod convert;
 pub mod fake;
 pub mod fps;
 
-#[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "camera"))]
+#[cfg(all(
+    any(target_os = "macos", target_os = "linux", target_os = "windows"),
+    feature = "camera"
+))]
 pub mod native;
 
 pub use convert::{rgb8_to_frame, rgba8_to_frame};

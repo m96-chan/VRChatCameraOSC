@@ -1,6 +1,6 @@
 //! Manual demo of the real native backend (AVFoundation on macOS, V4L2 on
-//! Linux). Ignored by default (it needs a webcam + permission and cannot run
-//! in CI). Run explicitly:
+//! Linux, MediaFoundation on Windows). Ignored by default (it needs a webcam
+//! + permission and cannot run in CI). Run explicitly:
 //!
 //! ```text
 //! cargo test --test capture_native_demo -- --ignored --nocapture
@@ -10,7 +10,10 @@
 //! frame and prints its resolution. Any failure (no camera / permission denied)
 //! is printed as a clear message rather than panicking.
 
-#![cfg(all(any(target_os = "macos", target_os = "linux"), feature = "camera"))]
+#![cfg(all(
+    any(target_os = "macos", target_os = "linux", target_os = "windows"),
+    feature = "camera"
+))]
 
 use vrchat_camera_osc::capture::native::NativeCamera;
 use vrchat_camera_osc::capture::CameraSource;

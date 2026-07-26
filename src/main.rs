@@ -175,7 +175,10 @@ fn build_camera(cfg: &Config, fake: bool) -> Box<dyn CameraSource> {
     Box::new(FakeCamera::new(cfg.camera.width, cfg.camera.height))
 }
 
-#[cfg(all(any(target_os = "macos", target_os = "linux"), feature = "camera"))]
+#[cfg(all(
+    any(target_os = "macos", target_os = "linux", target_os = "windows"),
+    feature = "camera"
+))]
 fn try_real_camera(index: u32, w: u32, h: u32) -> Option<Box<dyn CameraSource>> {
     use vrchat_camera_osc::capture::native::NativeCamera;
     match NativeCamera::open(index, w, h) {
@@ -187,7 +190,10 @@ fn try_real_camera(index: u32, w: u32, h: u32) -> Option<Box<dyn CameraSource>> 
     }
 }
 
-#[cfg(not(all(any(target_os = "macos", target_os = "linux"), feature = "camera")))]
+#[cfg(not(all(
+    any(target_os = "macos", target_os = "linux", target_os = "windows"),
+    feature = "camera"
+)))]
 fn try_real_camera(_index: u32, _w: u32, _h: u32) -> Option<Box<dyn CameraSource>> {
     None
 }

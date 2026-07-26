@@ -32,9 +32,9 @@ OSC. No GUI window; everything runs in a TUI.
 - **Target OS:** **cross-platform — macOS, Linux, and Windows** (decided
   2026-07-25; see issue #10). Development currently happens on Linux. Keep
   platform-specific code (camera capture: AVFoundation on macOS, V4L2 on
-  Linux, MediaFoundation on Windows *(planned)*) behind the `capture::native`
-  boundary so each backend slots in without churn. VRChat may run on a
-  separate machine — OSC reaches it over the network.
+  Linux, MediaFoundation on Windows) behind the `capture::native` boundary so
+  each backend slots in without churn. VRChat may run on a separate machine —
+  OSC reaches it over the network.
 - **[`unity/`](unity/) is a separate sub-project**: a Unity/C# VRChat SDK3
   Humanoid-avatar setup wizard (issue #16), distributed as a `.unitypackage`
   `Assets/`-folder drop-in (`unity/VRChatCameraOSC/`), not a UPM package —
@@ -153,8 +153,8 @@ end-to-end path.
   `cargo clippy`.
 - **Cross-platform (macOS, Linux, Windows)** — currently developed/verified on
   Linux. Keep platform-specific code (e.g. capture: AVFoundation on macOS,
-  V4L2 on Linux) behind clear boundaries so other targets slot in without
-  churn.
+  V4L2 on Linux, MediaFoundation on Windows) behind clear boundaries so other
+  targets slot in without churn.
 - The TUI is the primary control surface — no separate GUI window. The avatar is
   rendered by VRChat, not by this app.
 
