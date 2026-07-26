@@ -7,20 +7,22 @@ use rosc::{OscMessage, OscPacket, OscType};
 
 use super::{OscParam, OscValue};
 
-/// Map an [`OscValue`] to its single `rosc` OSC argument.
-pub(crate) fn to_osc_type(value: OscValue) -> OscType {
+/// Map an [`OscValue`] to its `rosc` OSC argument list (a single argument
+/// for the scalar variants, four for [`OscValue::Floats4`] — issue #19).
+pub(crate) fn to_osc_args(value: OscValue) -> Vec<OscType> {
     match value {
-        OscValue::Float(f) => OscType::Float(f),
-        OscValue::Bool(b) => OscType::Bool(b),
-        OscValue::Int(i) => OscType::Int(i),
+        OscValue::Float(f) => vec![OscType::Float(f)],
+        OscValue::Bool(b) => vec![OscType::Bool(b)],
+        OscValue::Int(i) => vec![OscType::Int(i)],
+        OscValue::Floats4(v) => v.into_iter().map(OscType::Float).collect(),
     }
 }
 
-/// Build the `rosc::OscMessage` for a parameter: address plus one argument.
+/// Build the `rosc::OscMessage` for a parameter: address plus argument(s).
 pub fn to_message(param: &OscParam) -> OscMessage {
     OscMessage {
         addr: param.address(),
-        args: vec![to_osc_type(param.value)],
+        args: to_osc_args(param.value),
     }
 }
 
@@ -37,10 +39,33 @@ mod tests {
 
     #[test]
     fn value_conversions_cover_every_variant() {
-        assert_eq!(to_osc_type(OscValue::Float(0.5)), OscType::Float(0.5));
-        assert_eq!(to_osc_type(OscValue::Bool(true)), OscType::Bool(true));
-        assert_eq!(to_osc_type(OscValue::Bool(false)), OscType::Bool(false));
-        assert_eq!(to_osc_type(OscValue::Int(-7)), OscType::Int(-7));
+        assert_eq!(to_osc_args(OscValue::Float(0.5)), vec![OscType::Float(0.5)]);
+        assert_eq!(to_osc_args(OscValue::Bool(true)), vec![OscType::Bool(true)]);
+        assert_eq!(
+            to_osc_args(OscValue::Bool(false)),
+            vec![OscType::Bool(false)]
+        );
+        assert_eq!(to_osc_args(OscValue::Int(-7)), vec![OscType::Int(-7)]);
+        assert_eq!(
+            to_osc_args(OscValue::Floats4([1.0, 2.0, 3.0, 4.0])),
+            vec![
+                OscType::Float(1.0),
+                OscType::Float(2.0),
+                OscType::Float(3.0),
+                OscType::Float(4.0)
+            ]
+        );
+    }
+
+    #[test]
+    fn raw_address_bypasses_avatar_parameters_prefix() {
+        let p = OscParam::raw_floats4("/tracking/eye/LeftRightPitchYaw", [1.0, 2.0, 3.0, 4.0]);
+        let msg = to_message(&p);
+        assert_eq!(msg.addr, "/tracking/eye/LeftRightPitchYaw");
+        assert_eq!(msg.args.len(), 4);
+
+        let p = OscParam::raw_float("/tracking/eye/EyesClosedAmount", 0.5);
+        assert_eq!(to_message(&p).addr, "/tracking/eye/EyesClosedAmount");
     }
 
     #[test]
@@ -80,7 +105,7 @@ mod tests {
             match packet {
                 OscPacket::Message(m) => {
                     assert_eq!(m.addr, param.address());
-                    assert_eq!(m.args, vec![to_osc_type(param.value)]);
+                    assert_eq!(m.args, to_osc_args(param.value));
                 }
                 OscPacket::Bundle(_) => panic!("expected a single message, not a bundle"),
             }

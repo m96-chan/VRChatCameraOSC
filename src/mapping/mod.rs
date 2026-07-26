@@ -80,6 +80,7 @@ use crate::osc::OscParam;
 use crate::tracking::{FaceLandmarks, Landmark};
 
 pub mod arkit;
+pub mod eye;
 pub mod unified;
 
 /// Common interface over the mappers that consume ARKit-style frames

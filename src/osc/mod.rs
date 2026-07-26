@@ -31,10 +31,12 @@ pub use monitor::MonitorSink;
 pub use rate::SendRate;
 pub use udp::UdpOscSender;
 
-/// A single VRChat avatar parameter update.
+/// A single OSC message to VRChat — usually an avatar parameter update, or
+/// (issue #19) a raw-address message like the native eye-tracking endpoints.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OscParam {
-    /// Parameter name (without the `/avatar/parameters/` prefix).
+    /// Parameter name (without the `/avatar/parameters/` prefix), **or** a
+    /// full OSC address if it starts with `/` (see [`OscParam::address`]).
     pub name: String,
     pub value: OscValue,
 }
@@ -59,9 +61,36 @@ impl OscParam {
         }
     }
 
-    /// Full OSC address for this parameter.
+    /// A single-float message at a raw OSC address (`addr` must start with
+    /// `/`), e.g. `/tracking/eye/EyesClosedAmount` (issue #19).
+    pub fn raw_float(addr: impl Into<String>, v: f32) -> Self {
+        let addr = addr.into();
+        debug_assert!(addr.starts_with('/'), "raw address must start with /");
+        Self {
+            name: addr,
+            value: OscValue::Float(v),
+        }
+    }
+
+    /// A four-float message at a raw OSC address (`addr` must start with
+    /// `/`), e.g. `/tracking/eye/LeftRightPitchYaw` (issue #19).
+    pub fn raw_floats4(addr: impl Into<String>, v: [f32; 4]) -> Self {
+        let addr = addr.into();
+        debug_assert!(addr.starts_with('/'), "raw address must start with /");
+        Self {
+            name: addr,
+            value: OscValue::Floats4(v),
+        }
+    }
+
+    /// Full OSC address for this message: `name` verbatim when it is already
+    /// a raw address (starts with `/`), else `/avatar/parameters/{name}`.
     pub fn address(&self) -> String {
-        format!("/avatar/parameters/{}", self.name)
+        if self.name.starts_with('/') {
+            self.name.clone()
+        } else {
+            format!("/avatar/parameters/{}", self.name)
+        }
     }
 }
 
@@ -70,6 +99,9 @@ pub enum OscValue {
     Float(f32),
     Bool(bool),
     Int(i32),
+    /// Four floats in one message (`/tracking/eye/LeftRightPitchYaw` — the
+    /// only multi-argument message VRChat expects from us; issue #19).
+    Floats4([f32; 4]),
 }
 
 /// A sink for OSC parameter updates. Implemented by the real UDP sender and by

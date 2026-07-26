@@ -29,6 +29,7 @@ use ratatui::Terminal;
 use vrchat_camera_osc::capture::{CameraSource, FakeCamera, FpsCounter};
 use vrchat_camera_osc::config::{Config, MappingProfile, TrackingBackend};
 use vrchat_camera_osc::mapping::arkit::{ArkitMapper, ArkitMappingConfig};
+use vrchat_camera_osc::mapping::eye::{EyeRange, NativeEyeMapper};
 use vrchat_camera_osc::mapping::unified::UnifiedMapper;
 use vrchat_camera_osc::mapping::{ArkitOscMapper, Mapper};
 use vrchat_camera_osc::models;
@@ -82,6 +83,8 @@ struct Args {
     backend: Option<TrackingBackend>,
     /// CLI override for `mapping.profile` (`--mapping custom10|vrcft`).
     mapping: Option<MappingProfile>,
+    /// CLI override for `eye.native` (`--native-eye on|off`).
+    native_eye: Option<bool>,
 }
 
 fn parse_args() -> Args {
@@ -95,6 +98,7 @@ fn parse_args() -> Args {
         calibrate_frames: DEFAULT_CALIBRATE_FRAMES,
         backend: None,
         mapping: None,
+        native_eye: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -136,10 +140,18 @@ fn parse_args() -> Args {
                     "--mapping expects 'custom10' or 'vrcft' (got {other:?}) — using config"
                 ),
             },
+            "--native-eye" => match it.next().as_deref() {
+                Some("on") => a.native_eye = Some(true),
+                Some("off") => a.native_eye = Some(false),
+                other => {
+                    eprintln!("--native-eye expects 'on' or 'off' (got {other:?}) — using config")
+                }
+            },
             "-h" | "--help" => {
                 println!(
                     "vrchat-camera-osc [--monitor] [--fake] [--frames N] \
                      [--backend mediapipe|fan] [--mapping custom10|vrcft] \
+                     [--native-eye on|off] \
                      [--weights FAN.safetensors] [--detector S3FD.safetensors] \
                      [--detect-interval N] [--calibrate-frames N]"
                 );
@@ -327,7 +339,17 @@ fn main() -> Result<()> {
                     Box::new(ArkitMapper::new(ArkitMappingConfig::default()))
                 }
             };
-            Pipeline::new_arkit(camera, tracker, mapper, sink)
+            let mut pipeline = Pipeline::new_arkit(camera, tracker, mapper, sink);
+            if args.native_eye.unwrap_or(cfg.eye.native) {
+                pipeline = pipeline.with_native_eye(NativeEyeMapper::new(
+                    ArkitMappingConfig::default(),
+                    EyeRange {
+                        yaw_deg: cfg.eye.yaw_range_deg,
+                        pitch_deg: cfg.eye.pitch_range_deg,
+                    },
+                ));
+            }
+            pipeline
         }
         TrackingBackend::Fan => {
             let tracker = build_tracker(&args.weights, &args.detector, args.detect_interval);
@@ -405,6 +427,9 @@ fn run_monitor(
                     }
                     vrchat_camera_osc::osc::OscValue::Int(v) => {
                         println!("{} i {v}", p.address())
+                    }
+                    vrchat_camera_osc::osc::OscValue::Floats4([a, b, c, d]) => {
+                        println!("{} f4 {a:.2} {b:.2} {c:.2} {d:.2}", p.address())
                     }
                 }
             }

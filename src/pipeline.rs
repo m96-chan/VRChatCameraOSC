@@ -17,6 +17,7 @@
 //! TUI, monitor mode) is stack- and profile-agnostic.
 
 use crate::capture::CameraSource;
+use crate::mapping::eye::NativeEyeMapper;
 use crate::mapping::ArkitOscMapper;
 use crate::mapping::Mapper;
 use crate::osc::{OscParam, OscSink};
@@ -47,6 +48,11 @@ enum Stack {
         /// Trait object: either mapping profile (10-param `ArkitMapper` or
         /// VRCFT `UnifiedMapper`), chosen by config/CLI (issue #18).
         mapper: Box<dyn ArkitOscMapper>,
+        /// Optional native `/tracking/eye/*` output appended to every frame's
+        /// params (issue #19) — orthogonal to the mapping profile. Boxed:
+        /// the mapper's filter bank dwarfs the other variant (clippy
+        /// `large_enum_variant`).
+        eye: Option<Box<NativeEyeMapper>>,
     },
 }
 
@@ -83,9 +89,23 @@ impl Pipeline {
     ) -> Self {
         Self {
             camera,
-            stack: Stack::Arkit { tracker, mapper },
+            stack: Stack::Arkit {
+                tracker,
+                mapper,
+                eye: None,
+            },
             sink,
         }
+    }
+
+    /// Attach the native `/tracking/eye/*` mapper (issue #19) to an ARKit
+    /// stack; a no-op on the landmarks (FAN) stack, which lacks the eye
+    /// channels it needs.
+    pub fn with_native_eye(mut self, eye_mapper: NativeEyeMapper) -> Self {
+        if let Stack::Arkit { eye, .. } = &mut self.stack {
+            *eye = Some(Box::new(eye_mapper));
+        }
+        self
     }
 
     /// Pull one frame through the whole pipeline. Captures a frame, tracks a
@@ -111,10 +131,17 @@ impl Pipeline {
                     }
                 }
             }
-            Stack::Arkit { tracker, mapper } => {
+            Stack::Arkit {
+                tracker,
+                mapper,
+                eye,
+            } => {
                 if let Some(tracker) = tracker.as_mut() {
                     if let Some(face) = tracker.track(&frame)? {
-                        let params = mapper.map(&face);
+                        let mut params = mapper.map(&face);
+                        if let Some(eye) = eye.as_mut() {
+                            params.extend(eye.map(&face));
+                        }
                         self.sink.send(&params)?;
                         outcome.params = params;
                     }
@@ -154,7 +181,11 @@ impl Pipeline {
                 mapper.calibrate(&samples);
                 Ok(samples.len())
             }
-            Stack::Arkit { tracker, mapper } => {
+            Stack::Arkit {
+                tracker,
+                mapper,
+                eye,
+            } => {
                 let Some(tracker) = tracker.as_mut() else {
                     return Ok(0);
                 };
@@ -166,6 +197,9 @@ impl Pipeline {
                     }
                 }
                 mapper.calibrate(&samples);
+                if let Some(eye) = eye.as_mut() {
+                    eye.calibrate(&samples);
+                }
                 Ok(samples.len())
             }
         }

@@ -5,13 +5,15 @@ use super::{OscParam, OscSink, OscValue};
 
 /// Render a parameter as a single monitor line: `"<address> <tag> <value>"`.
 ///
-/// `tag` is `f` (float), `b` (bool) or `i` (int) — see [`crate::osc`] docs.
+/// `tag` is `f` (float), `b` (bool), `i` (int) or `f4` (four floats,
+/// space-separated) — see [`crate::osc`] docs.
 fn format_line(param: &OscParam) -> String {
     let addr = param.address();
     match param.value {
         OscValue::Float(v) => format!("{addr} f {v}"),
         OscValue::Bool(v) => format!("{addr} b {v}"),
         OscValue::Int(v) => format!("{addr} i {v}"),
+        OscValue::Floats4([a, b, c, d]) => format!("{addr} f4 {a} {b} {c} {d}"),
     }
 }
 
@@ -81,6 +83,13 @@ mod tests {
         assert_eq!(
             format_line(&OscParam::int("VRCEmote", 3)),
             "/avatar/parameters/VRCEmote i 3"
+        );
+        assert_eq!(
+            format_line(&OscParam::raw_floats4(
+                "/tracking/eye/LeftRightPitchYaw",
+                [1.0, -2.0, 3.0, -4.0]
+            )),
+            "/tracking/eye/LeftRightPitchYaw f4 1 -2 3 -4"
         );
     }
 

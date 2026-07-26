@@ -36,6 +36,7 @@ pub struct Config {
     pub camera: CameraConfig,
     pub tracking: TrackingConfig,
     pub mapping: MappingConfig,
+    pub eye: EyeConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -64,6 +65,31 @@ pub struct TrackingConfig {
     pub smoothing: f32,
     /// Which face-tracking backend drives the pipeline (issue #17).
     pub backend: TrackingBackend,
+}
+
+/// Native VRChat eye-tracking OSC (`/tracking/eye/*`, issue #19): drives the
+/// avatar's existing eye bones directly — no avatar parameters needed. Works
+/// alongside either mapping profile; mediapipe backend only.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct EyeConfig {
+    /// Send `/tracking/eye/LeftRightPitchYaw` + `EyesClosedAmount`.
+    pub native: bool,
+    /// Degrees of eye yaw at a saturated (1.0) look coefficient.
+    pub yaw_range_deg: f32,
+    /// Degrees of eye pitch at a saturated (1.0) look coefficient.
+    pub pitch_range_deg: f32,
+}
+
+impl Default for EyeConfig {
+    fn default() -> Self {
+        let range = crate::mapping::eye::EyeRange::default();
+        Self {
+            native: true,
+            yaw_range_deg: range.yaw_deg,
+            pitch_range_deg: range.pitch_deg,
+        }
+    }
 }
 
 /// Output mapping profile selection (issue #18).

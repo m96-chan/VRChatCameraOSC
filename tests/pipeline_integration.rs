@@ -333,6 +333,61 @@ fn arkit_pipeline_with_vrcft_profile_emits_v2_params() {
     );
 }
 
+// Native /tracking/eye/* output (issue #19) is appended to the profile
+// params and participates in neutral calibration.
+#[test]
+fn arkit_pipeline_with_native_eye_appends_tracking_eye_messages() {
+    use vrchat_camera_osc::mapping::eye::{EyeRange, NativeEyeMapper};
+
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let sink = RecordingSink(recorded.clone());
+    let mut pipeline = Pipeline::new_arkit(
+        Box::new(FakeCamera::new(320, 240)),
+        Some(Box::new(StubArkitTracker(resting_arkit_frame()))),
+        Box::new(ArkitMapper::new(ArkitMappingConfig::default())),
+        Box::new(sink),
+    )
+    .with_native_eye(NativeEyeMapper::new(
+        ArkitMappingConfig::default(),
+        EyeRange::default(),
+    ));
+
+    let n = pipeline.calibrate_neutral(5).unwrap();
+    assert_eq!(n, 5);
+    assert_eq!(
+        recorded.lock().unwrap().len(),
+        0,
+        "calibration sends no OSC"
+    );
+
+    let outcome = pipeline.step().unwrap();
+    assert_eq!(
+        outcome.params.len(),
+        10 + 2,
+        "10 profile params + gaze + eyes-closed"
+    );
+    let gaze = outcome
+        .params
+        .iter()
+        .find(|p| p.name == "/tracking/eye/LeftRightPitchYaw")
+        .expect("gaze message present");
+    assert!(matches!(
+        gaze.value,
+        vrchat_camera_osc::osc::OscValue::Floats4(_)
+    ));
+    assert_eq!(gaze.address(), "/tracking/eye/LeftRightPitchYaw");
+    let closed = outcome
+        .params
+        .iter()
+        .find(|p| p.name == "/tracking/eye/EyesClosedAmount")
+        .expect("eyes-closed message present");
+    if let vrchat_camera_osc::osc::OscValue::Float(v) = closed.value {
+        assert!(v.abs() < 0.05, "calibrated rest should read ~0: {v}");
+    } else {
+        panic!("EyesClosedAmount must be a float");
+    }
+}
+
 #[test]
 fn arkit_pipeline_without_tracker_sends_nothing() {
     let recorded = Arc::new(Mutex::new(Vec::new()));

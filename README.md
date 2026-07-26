@@ -27,6 +27,9 @@ Realtime face tracking for VRChat, driven from your webcam and delivered over OS
 - **VRCFaceTracking-compatible output** (`--mapping vrcft`) — emit the Unified
   Expressions `v2/` float parameters that VRCFT sends, so VRCFT-ready avatars
   work with **zero avatar-side setup** (issue #18; float params — phase 1).
+- **Native eye tracking** (default ON) — gaze + blink over VRChat's own
+  `/tracking/eye/*` OSC endpoints, which drive the avatar's **existing eye
+  bones directly** — works on any avatar, no parameters, no wizard (issue #19).
 - **TUI** — monitor and control everything from the terminal.
 
 ## Tech
@@ -57,6 +60,7 @@ swappable:
 | Tracking (`fan`) | `tracking::FaceTracker` | `fan::FanTracker` — the face-alignment **2DFAN4** net ported to pure-Rust **candle**, with `sfd::SfdDetector` (**S3FD**) auto-cropping first |
 | Mapping (default) | `mapping::arkit::ArkitMapper` | 52 ARKit coefficients + head pose → 10 avatar params, with per-channel neutral-baseline calibration (per-eye blink self-calibration so open→0, blink→1) and One-Euro smoothing |
 | Mapping (`vrcft`) | `mapping::unified::UnifiedMapper` | 52 ARKit coefficients → Unified Expressions shapes (VRCFT LiveLink correlation) → the VRCFT `v2/` float parameter set + `*TrackingActive` bools, same calibration/smoothing design; profile selected via `[mapping]` / `--mapping` (issue #18) |
+| Eye (native) | `mapping::eye::NativeEyeMapper` | 12 eye channels → `/tracking/eye/LeftRightPitchYaw` (degrees) + `EyesClosedAmount`, appended to either profile's output; `[eye]` / `--native-eye` (issue #19) |
 | Mapping (`fan`) | `mapping::Mapper` | iBUG-68 landmarks → the same 10 params via geometric ratios, clamped + smoothed |
 | OSC | `osc::OscSink` | `UdpOscSender` to VRChat, or `MonitorSink` dry-run |
 | Loop | `pipeline::Pipeline` | `capture → track → map → OSC`, driven by the TUI or headless monitor |
@@ -121,7 +125,8 @@ uv pip install --python .venv "torch>=2.2" "numpy<2" safetensors face-alignment 
 CLI flags: `--monitor` (headless), `--fake` (synthetic camera), `--frames N`
 (stop after N frames), `--backend mediapipe|fan` (overrides the config's
 `[tracking] backend`), `--mapping custom10|vrcft` (overrides `[mapping]
-profile`; see Avatar setup below), `--weights PATH`, `--detector PATH` (FAN
+profile`; see Avatar setup below), `--native-eye on|off` (overrides `[eye]
+native`; see Avatar setup below), `--weights PATH`, `--detector PATH` (FAN
 backend only; a custom path is never auto-downloaded), `--detect-interval N`
 (see Performance below), `--calibrate-frames N` (see Calibration below; `0`
 skips calibration).
@@ -202,6 +207,23 @@ etc.) cover facial expression or head pose. A stock/default avatar, or any
 avatar that hasn't been specifically wired up, **will not react** to this
 app's output.
 
+**Exception — eye tracking**: VRChat's native `/tracking/eye/*` OSC endpoints
+(sent by default, `[eye] native` / `--native-eye`) drive the avatar's
+**existing eye bones directly**, so gaze and blink work on *any* avatar with
+eye bones configured — no parameters, no wizard, nothing to set up (issue
+#19; [VRChat docs](https://docs.vrchat.com/docs/osc-eye-tracking)). Gaze
+range gains are `[eye] yaw_range_deg` / `pitch_range_deg` (defaults 30°/25°).
+If the face is lost, the data times out after 10 s and VRChat's own eye
+behaviour resumes automatically.
+
+Expressiveness tiers at a glance (松竹梅 — issue #19):
+
+| Tier | What you run | Avatar-side work | What moves |
+|---|---|---|---|
+| 梅 | `custom10` profile + `unity/` wizard | run the wizard | 10 params: mouth, blink, brows, head |
+| 竹 | either profile + native eye (default ON) | none for the eyes | + gaze & blink on any avatar with eye bones |
+| 松 | `--mapping vrcft` on an FT-ready avatar | none | full Unified Expressions float set (~145 params) |
+
 ### Option 1 — VRCFT-ready avatars: `--mapping vrcft`, no setup (issue #18)
 
 If your avatar already supports **VRCFaceTracking / Unified Expressions**
@@ -264,6 +286,8 @@ OSC host/port, camera device, and tracking settings will be configurable from th
 - [x] ARKit blendshapes → OSC mapping (per-eye blink self-calibration, One-Euro smoothing)
 - [x] VRCFaceTracking-compatible output — Unified Expressions `v2/` float params (issue #18 phase 1)
 - [ ] VRCFT binary parameter encoding + avatar-config/OSCQuery param gating (issue #18 phases 2–3)
+- [x] Native eye tracking — `/tracking/eye/*` gaze + blink, any avatar, zero setup (issue #19)
+- [ ] Tongue tracking — needs a model with a tongue signal; R&D (issue #20)
 - [x] OSC sender (UDP) + dry-run monitor
 - [x] TUI: live values, status, and configuration
 - [x] Config file support
