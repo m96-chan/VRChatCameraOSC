@@ -268,6 +268,45 @@ fn tracking_backend_defaults_to_mediapipe() {
     assert_eq!(cfg.tracking.backend, TrackingBackend::Mediapipe);
 }
 
+// Avatar-aware vrcft keys (issue #18 phases 2+3): [osc] listen_port and
+// [mapping] avatar_config_dir.
+#[test]
+fn listen_port_defaults_to_9001_and_is_configurable() {
+    assert_eq!(Config::default().osc.listen_port, 9001);
+    // A config file written before the field existed still loads.
+    let cfg: Config = toml::from_str("[osc]\nport = 9000\n").unwrap();
+    assert_eq!(cfg.osc.listen_port, 9001);
+    // 0 = disabled is a valid setting.
+    let cfg: Config = toml::from_str("[osc]\nlisten_port = 0\n").unwrap();
+    assert_eq!(cfg.osc.listen_port, 0);
+    assert!(
+        cfg.validate().is_ok(),
+        "listen_port 0 means disabled, not invalid"
+    );
+    let cfg: Config = toml::from_str("[osc]\nlisten_port = 9051\n").unwrap();
+    assert_eq!(cfg.osc.listen_port, 9051);
+}
+
+#[test]
+fn avatar_config_dir_defaults_to_none_and_round_trips() {
+    assert_eq!(Config::default().mapping.avatar_config_dir, None);
+    let cfg: Config =
+        toml::from_str("[mapping]\navatar_config_dir = \"/tmp/osc-configs\"\n").unwrap();
+    assert_eq!(
+        cfg.mapping.avatar_config_dir.as_deref(),
+        Some("/tmp/osc-configs")
+    );
+    // Round-trips through save/load (Option field serialization).
+    let dir = TempDir::new("avatar-config-dir-roundtrip");
+    let path = dir.join("config.toml");
+    cfg.save(&path).unwrap();
+    let loaded = Config::load(&path).unwrap();
+    assert_eq!(
+        loaded.mapping.avatar_config_dir.as_deref(),
+        Some("/tmp/osc-configs")
+    );
+}
+
 #[test]
 fn tracking_backend_fan_is_selectable() {
     use vrchat_camera_osc::config::TrackingBackend;

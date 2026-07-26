@@ -1,0 +1,105 @@
+{
+    "id": "avtr_00000000-0000-4000-8000-00000000b14a",
+    "name": "Fixture Binary FT Avatar",
+    "parameters": [
+        {
+            "name": "FT/v2/JawOpen",
+            "input": {
+                "address": "/avatar/parameters/FT/v2/JawOpen",
+                "type": "Bool"
+            },
+            "output": {
+                "address": "/avatar/parameters/FT/v2/JawOpen",
+                "type": "Bool"
+            }
+        },
+        {
+            "name": "FT/v2/JawOpen1",
+            "input": {
+                "address": "/avatar/parameters/FT/v2/JawOpen1",
+                "type": "Bool"
+            },
+            "output": {
+                "address": "/avatar/parameters/FT/v2/JawOpen1",
+                "type": "Bool"
+            }
+        },
+        {
+            "name": "FT/v2/JawOpen2",
+            "input": {
+                "address": "/avatar/parameters/FT/v2/JawOpen2",
+                "type": "Bool"
+            },
+            "output": {
+                "address": "/avatar/parameters/FT/v2/JawOpen2",
+                "type": "Bool"
+            }
+        },
+        {
+            "name": "FT/v2/JawOpen4",
+            "input": {
+                "address": "/avatar/parameters/FT/v2/JawOpen4",
+                "type": "Bool"
+            },
+            "output": {
+                "address": "/avatar/parameters/FT/v2/JawOpen4",
+                "type": "Bool"
+            }
+        },
+        {
+            "name": "FT/v2/JawOpen8",
+            "input": {
+                "address": "/avatar/parameters/FT/v2/JawOpen8",
+                "type": "Bool"
+            },
+            "output": {
+                "address": "/avatar/parameters/FT/v2/JawOpen8",
+                "type": "Bool"
+            }
+        },
+        {
+            "name": "FT/v2/SmileFrown1",
+            "input": {
+                "address": "/avatar/parameters/FT/v2/SmileFrown1",
+                "type": "Bool"
+            },
+            "output": {
+                "address": "/avatar/parameters/FT/v2/SmileFrown1",
+                "type": "Bool"
+            }
+        },
+        {
+            "name": "FT/v2/SmileFrown2",
+            "input": {
+                "address": "/avatar/parameters/FT/v2/SmileFrown2",
+                "type": "Bool"
+            },
+            "output": {
+                "address": "/avatar/parameters/FT/v2/SmileFrown2",
+                "type": "Bool"
+            }
+        },
+        {
+            "name": "FT/v2/SmileFrownNegative",
+            "input": {
+                "address": "/avatar/parameters/FT/v2/SmileFrownNegative",
+                "type": "Bool"
+            },
+            "output": {
+                "address": "/avatar/parameters/FT/v2/SmileFrownNegative",
+                "type": "Bool"
+            }
+        },
+        {
+            "name": "LipTrackingActive",
+            "input": {
+                "address": "/avatar/parameters/LipTrackingActive",
+                "type": "Bool"
+            },
+            "output": {
+                "address": "/avatar/parameters/LipTrackingActive",
+                "type": "Bool"
+            }
+        }
+    ]
+}

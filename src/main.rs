@@ -29,11 +29,12 @@ use ratatui::Terminal;
 use vrchat_camera_osc::capture::{CameraSource, FakeCamera, FpsCounter};
 use vrchat_camera_osc::config::{Config, MappingProfile, TrackingBackend};
 use vrchat_camera_osc::mapping::arkit::{ArkitMapper, ArkitMappingConfig};
+use vrchat_camera_osc::mapping::avatar::{self, AvatarWatcher};
 use vrchat_camera_osc::mapping::eye::{EyeRange, NativeEyeMapper};
 use vrchat_camera_osc::mapping::unified::UnifiedMapper;
 use vrchat_camera_osc::mapping::{ArkitOscMapper, Mapper};
 use vrchat_camera_osc::models;
-use vrchat_camera_osc::osc::{MonitorSink, OscSink, UdpOscSender};
+use vrchat_camera_osc::osc::{AvatarChangeListener, MonitorSink, OscSink, UdpOscSender};
 use vrchat_camera_osc::pipeline::Pipeline;
 use vrchat_camera_osc::tracking::arkit::ArkitFaceTracker;
 use vrchat_camera_osc::tracking::detect::sfd::SfdDetector;
@@ -308,6 +309,40 @@ fn build_arkit_tracker(detect_interval: Option<u32>) -> Option<Box<dyn ArkitFace
     }
 }
 
+/// Build the avatar-aware machinery for the `vrcft` profile (issue #18 phase
+/// 3): the config-dir scan (explicit `[mapping] avatar_config_dir` override,
+/// else per-platform VRChat defaults) plus the `/avatar/change` listener on
+/// `[osc] listen_port` (default 9001; 0 disables it). Also reports what was
+/// (or wasn't) found, so a silent fallback is visible to the user.
+fn build_avatar_watcher(cfg: &Config) -> AvatarWatcher {
+    let dirs = avatar::config_dirs(cfg.mapping.avatar_config_dir.as_deref());
+    match avatar::find_most_recent_config(&dirs) {
+        Some(c) => eprintln!(
+            "vrcft: gating to avatar '{}' ({}) from its OSC config",
+            c.name, c.id
+        ),
+        None => eprintln!(
+            "vrcft: no avatar OSC config found under {:?} — sending the full \
+             float set under the configured prefixes",
+            dirs
+        ),
+    }
+    let listener = match cfg.osc.listen_port {
+        0 => None,
+        port => match AvatarChangeListener::bind(port) {
+            Ok(l) => Some(l),
+            Err(e) => {
+                eprintln!(
+                    "vrcft: could not listen for /avatar/change on port {port}: {e:#} — \
+                     avatar switches won't be detected this run"
+                );
+                None
+            }
+        },
+    };
+    AvatarWatcher::new(dirs, listener)
+}
+
 fn main() -> Result<()> {
     let args = parse_args();
 
@@ -340,6 +375,9 @@ fn main() -> Result<()> {
                 }
             };
             let mut pipeline = Pipeline::new_arkit(camera, tracker, mapper, sink);
+            if profile == MappingProfile::Vrcft {
+                pipeline = pipeline.with_avatar_watcher(build_avatar_watcher(&cfg));
+            }
             if args.native_eye.unwrap_or(cfg.eye.native) {
                 pipeline = pipeline.with_native_eye(NativeEyeMapper::new(
                     ArkitMappingConfig::default(),

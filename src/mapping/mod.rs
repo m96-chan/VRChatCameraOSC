@@ -80,6 +80,7 @@ use crate::osc::OscParam;
 use crate::tracking::{FaceLandmarks, Landmark};
 
 pub mod arkit;
+pub mod avatar;
 pub mod eye;
 pub mod unified;
 
@@ -92,6 +93,11 @@ pub trait ArkitOscMapper {
     fn map(&mut self, frame: &crate::tracking::arkit::ArkitFaceFrame) -> Vec<OscParam>;
     /// Re-derive the neutral baselines from relaxed forward-facing samples.
     fn calibrate(&mut self, frames: &[crate::tracking::arkit::ArkitFaceFrame]);
+    /// Adopt (`Some`) or clear (`None`) the worn avatar's declared OSC
+    /// parameter set (issue #18 phase 3). Default: ignored — only the
+    /// `vrcft` profile is avatar-aware; the `custom10` params are whatever
+    /// the user's own avatar wiring declares.
+    fn set_avatar_config(&mut self, _config: Option<&avatar::AvatarOscConfig>) {}
 }
 
 /// Output parameter names, in a stable emission order.
