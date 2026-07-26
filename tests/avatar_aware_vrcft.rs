@@ -42,10 +42,18 @@ fn temp_config_dir(first: &str, last: &str) -> PathBuf {
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&avatars).unwrap();
     let src = fixture_dir().join("usr_test-user").join("Avatars");
-    std::fs::copy(src.join(first), avatars.join(first)).unwrap();
+    // Not fs::copy: on Windows it preserves the source's last-write time, so
+    // copied fixtures would keep their checkout mtimes and the "written last
+    // = newest" ordering below would not hold. read+write always stamps a
+    // fresh mtime on every platform.
+    let rewrite = |name: &str| {
+        let bytes = std::fs::read(src.join(name)).unwrap();
+        std::fs::write(avatars.join(name), bytes).unwrap();
+    };
+    rewrite(first);
     // Some filesystems have coarse mtime granularity; force an ordering gap.
     std::thread::sleep(Duration::from_millis(30));
-    std::fs::copy(src.join(last), avatars.join(last)).unwrap();
+    rewrite(last);
     dir
 }
 
