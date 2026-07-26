@@ -4,6 +4,16 @@ Editor wizard for VRChat SDK3 that wires a **Humanoid** avatar's existing
 blend shapes and head bone to the 10 OSC parameters
 [VRChatCameraOSC](../README.md) sends (issue [#16](https://github.com/m96-chan/VRChatCameraOSC/issues/16)).
 
+> **You may not need this wizard at all.** If your avatar already supports
+> **VRCFaceTracking / Unified Expressions** (most commercial
+> face-tracking-ready avatars do), run the tracker with `--mapping vrcft`
+> instead: it emits the same `v2/` parameters VRCFaceTracking sends, and the
+> avatar works with **no Unity work whatsoever** (issue
+> [#18](https://github.com/m96-chan/VRChatCameraOSC/issues/18); float
+> parameters only for now — avatars whose FT parameters are exclusively
+> *binary* still need VRCFT phase 2, and non-FT avatars still need this
+> wizard). See ["Avatar setup" in the main README](../README.md#avatar-setup-required-for-the-avatar-to-actually-move).
+
 ## What this is — and isn't
 
 VRChat's own OSC receiver already routes `/avatar/parameters/<Name>` into the
