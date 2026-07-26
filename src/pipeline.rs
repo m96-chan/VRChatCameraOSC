@@ -17,6 +17,7 @@
 //! TUI, monitor mode) is stack- and profile-agnostic.
 
 use crate::capture::CameraSource;
+use crate::mapping::avatar::AvatarWatcher;
 use crate::mapping::eye::NativeEyeMapper;
 use crate::mapping::ArkitOscMapper;
 use crate::mapping::Mapper;
@@ -62,6 +63,9 @@ pub struct Pipeline {
     camera: Box<dyn CameraSource>,
     stack: Stack,
     sink: Box<dyn OscSink>,
+    /// Avatar-aware VRCFT gating (issue #18 phase 3): polled once per step
+    /// for `/avatar/change`; feeds the mapper's `set_avatar_config`.
+    watcher: Option<AvatarWatcher>,
 }
 
 impl Pipeline {
@@ -76,6 +80,7 @@ impl Pipeline {
             camera,
             stack: Stack::Landmarks { tracker, mapper },
             sink,
+            watcher: None,
         }
     }
 
@@ -95,7 +100,25 @@ impl Pipeline {
                 eye: None,
             },
             sink,
+            watcher: None,
         }
+    }
+
+    /// Attach an [`AvatarWatcher`] (issue #18 phase 3): applies its startup
+    /// best-effort avatar config immediately, then polls it once per
+    /// [`step`](Self::step) — a single nonblocking socket read; the
+    /// filesystem is only touched when the avatar actually changes (see
+    /// `mapping::avatar` for the polling-not-thread rationale). Only the
+    /// ARKit stack's mapper can be avatar-aware; on the FAN stack this is a
+    /// harmless no-op.
+    pub fn with_avatar_watcher(mut self, mut watcher: AvatarWatcher) -> Self {
+        if let Stack::Arkit { mapper, .. } = &mut self.stack {
+            if let Some(cfg) = watcher.initial_config() {
+                mapper.set_avatar_config(Some(&cfg));
+            }
+        }
+        self.watcher = Some(watcher);
+        self
     }
 
     /// Attach the native `/tracking/eye/*` mapper (issue #19) to an ARKit
@@ -112,6 +135,16 @@ impl Pipeline {
     /// face (if a tracker is attached), maps to OSC parameters, and sends
     /// them to the sink.
     pub fn step(&mut self) -> Result<StepOutcome> {
+        // Avatar switches first, so this frame already goes out gated to the
+        // new avatar's param set.
+        if let Some(watcher) = &mut self.watcher {
+            if let Some(update) = watcher.poll() {
+                if let Stack::Arkit { mapper, .. } = &mut self.stack {
+                    mapper.set_avatar_config(update.as_ref());
+                }
+            }
+        }
+
         let frame = self.camera.next_frame()?;
         let frame_size = (frame.width, frame.height);
 

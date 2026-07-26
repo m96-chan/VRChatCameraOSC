@@ -46,6 +46,10 @@ pub struct OscConfig {
     pub port: u16,
     /// When true, don't send — only monitor (dry-run).
     pub dry_run: bool,
+    /// UDP port to receive VRChat's OSC output on (`/avatar/change`, used by
+    /// the avatar-aware `vrcft` profile — issue #18 phase 3). VRChat sends
+    /// to 9001 by default; `0` disables the listener entirely.
+    pub listen_port: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -100,9 +104,17 @@ pub struct MappingConfig {
     pub profile: MappingProfile,
     /// Address prefixes for the `vrcft` profile: each parameter is sent once
     /// per prefix (`""` → `v2/JawOpen`, `"FT/"` → `FT/v2/JawOpen`, ...).
-    /// Phase 1 has no avatar-config discovery, so the common conventions are
-    /// covered by default; VRChat ignores undeclared addresses.
+    /// Since issue #18 phase 3 this is the **no-avatar-config fallback
+    /// only**: when the worn avatar's OSC config is discovered, output is
+    /// gated to the declared parameters at their exact addresses instead.
+    /// VRChat ignores undeclared addresses.
     pub vrcft_prefixes: Vec<String>,
+    /// Explicit directory to read VRChat's per-avatar OSC config JSONs from
+    /// (`.../VRChat/VRChat/OSC` or any level of that tree). Unset → the
+    /// per-platform default locations (Windows `%USERPROFILE%`, Linux
+    /// Steam/Proton prefix — see `mapping::avatar::default_osc_dirs`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub avatar_config_dir: Option<String>,
 }
 
 impl Default for MappingConfig {
@@ -113,6 +125,7 @@ impl Default for MappingConfig {
                 .iter()
                 .map(|s| s.to_string())
                 .collect(),
+            avatar_config_dir: None,
         }
     }
 }
@@ -150,6 +163,7 @@ impl Default for OscConfig {
             host: "127.0.0.1".to_string(),
             port: 9000,
             dry_run: false,
+            listen_port: 9001,
         }
     }
 }

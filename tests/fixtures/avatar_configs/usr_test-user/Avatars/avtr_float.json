@@ -1,0 +1,90 @@
+{
+    "id": "avtr_00000000-0000-4000-8000-00000000f10a",
+    "name": "Fixture Float FT Avatar",
+    "parameters": [
+        {
+            "name": "FT/v2/JawOpen",
+            "input": {
+                "address": "/avatar/parameters/FT/v2/JawOpen",
+                "type": "Float"
+            },
+            "output": {
+                "address": "/avatar/parameters/FT/v2/JawOpen",
+                "type": "Float"
+            }
+        },
+        {
+            "name": "FT/v2/MouthClosed",
+            "input": {
+                "address": "/avatar/parameters/FT/v2/MouthClosed",
+                "type": "Float"
+            },
+            "output": {
+                "address": "/avatar/parameters/FT/v2/MouthClosed",
+                "type": "Float"
+            }
+        },
+        {
+            "name": "FT/v2/SmileFrownRight",
+            "input": {
+                "address": "/avatar/parameters/FT/v2/SmileFrownRight",
+                "type": "Float"
+            },
+            "output": {
+                "address": "/avatar/parameters/FT/v2/SmileFrownRight",
+                "type": "Float"
+            }
+        },
+        {
+            "name": "FT/v2/EyeLidLeft",
+            "input": {
+                "address": "/avatar/parameters/FT/v2/EyeLidLeft",
+                "type": "Float"
+            },
+            "output": {
+                "address": "/avatar/parameters/FT/v2/EyeLidLeft",
+                "type": "Float"
+            }
+        },
+        {
+            "name": "EyeTrackingActive",
+            "input": {
+                "address": "/avatar/parameters/EyeTrackingActive",
+                "type": "Bool"
+            },
+            "output": {
+                "address": "/avatar/parameters/EyeTrackingActive",
+                "type": "Bool"
+            }
+        },
+        {
+            "name": "ExpressionTrackingActive",
+            "input": {
+                "address": "/avatar/parameters/ExpressionTrackingActive",
+                "type": "Bool"
+            },
+            "output": {
+                "address": "/avatar/parameters/ExpressionTrackingActive",
+                "type": "Bool"
+            }
+        },
+        {
+            "name": "GestureLeft",
+            "input": {
+                "address": "/avatar/parameters/GestureLeft",
+                "type": "Int"
+            },
+            "output": {
+                "address": "/avatar/parameters/GestureLeft",
+                "type": "Int"
+            }
+        },
+        {
+            "name": "VelocityX",
+            "output": {
+                "address": "/avatar/parameters/VelocityX",
+                "type": "Float"
+            }
+        }
+    ]
+}

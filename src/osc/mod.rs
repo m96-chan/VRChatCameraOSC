@@ -22,11 +22,13 @@
 //!   greppable, one-line-per-message form for the TUI and tests.
 
 mod encode;
+mod listen;
 mod monitor;
 mod rate;
 mod udp;
 
 pub use encode::{encode_param, to_message};
+pub use listen::AvatarChangeListener;
 pub use monitor::MonitorSink;
 pub use rate::SendRate;
 pub use udp::UdpOscSender;

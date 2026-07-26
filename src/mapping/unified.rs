@@ -40,14 +40,24 @@
 //! mapper calibrates **every** real channel because nearly all 52 reach an
 //! output here, where [`super::arkit::ArkitMapper`] only needs 11.
 //!
-//! # Prefixes
+//! # Avatar-aware gating (issue #18 phases 2+3) vs. blind prefixes
 //!
 //! VRCFT discovers the avatar's parameter addresses (arbitrary user prefix,
 //! `FT/` by common template convention) from the avatar's OSC config JSON and
-//! sends only those. Phase 1 has no avatar discovery (issue #18 phase 3), so
-//! the same value is sent under **each configured prefix** — default `""` and
-//! `"FT/"`, i.e. `v2/JawOpen` *and* `FT/v2/JawOpen`. VRChat ignores addresses
-//! the avatar doesn't declare, so the extra copies are harmless.
+//! sends only those. When an avatar config is loaded
+//! ([`UnifiedMapper::set_avatar_config`] — fed by
+//! [`super::avatar::AvatarWatcher`] via the pipeline), this mapper does the
+//! same: each conceptual value is resolved through
+//! [`super::avatar::AvatarParamSet`] and emitted **only** in the forms the
+//! avatar declares — float, plain bool, and/or **binary bit params**
+//! (`<Name>1/2/4/8...` + `<Name>Negative`) — at the exact declared
+//! addresses.
+//!
+//! Without a config (none discovered, or an avatar we have no JSON for),
+//! the phase-1 fallback applies: the same value is sent as floats under
+//! **each configured prefix** — default `""` and `"FT/"`, i.e. `v2/JawOpen`
+//! *and* `FT/v2/JawOpen`. VRChat ignores addresses the avatar doesn't
+//! declare, so the extra copies are harmless.
 //!
 //! # Not sent (no source data in ARKit-52)
 //!
@@ -68,6 +78,7 @@
 //!   `HeadYaw`/`HeadPitch`/`HeadRoll` (roll negated, yaw/pitch as-is).
 
 use super::arkit::{deadzone, ArkitMappingConfig, HeadCalib, OneEuro};
+use super::avatar::{AvatarOscConfig, AvatarParamSet};
 use crate::osc::OscParam;
 use crate::tracking::arkit::{ArkitFaceFrame, NUM_BLENDSHAPES};
 
@@ -128,6 +139,23 @@ const CH_NOSE_SNEER_RIGHT: usize = 51;
 /// Default address prefixes — send both the bare `v2/...` form and the `FT/`
 /// template convention (see the module docs).
 pub const DEFAULT_PREFIXES: [&str; 2] = ["", "FT/"];
+
+/// The status bools FT avatars gate their animator layers on (VRCFT
+/// `ConditionalBoolParameter` names — no `v2/` prefix).
+pub const STATUS_PARAM_NAMES: [&str; 3] = [
+    "EyeTrackingActive",
+    "ExpressionTrackingActive",
+    "LipTrackingActive",
+];
+
+/// Every canonical float name this mapper can emit (`v2/...` incl. head) —
+/// the name universe [`AvatarParamSet`] resolution gates against.
+pub fn float_param_names() -> Vec<&'static str> {
+    param_values(&[0.0; NUM_BLENDSHAPES], 0.0, 0.0, 0.0)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect()
+}
 
 /// Whether channel `idx` gets the snappier `fast_mincutoff` — mirrors
 /// [`super::arkit`]: only the (slow-moving) brow channels use the general
@@ -214,6 +242,10 @@ pub struct UnifiedMapper {
     head_calib: HeadCalib,
     filters: [OneEuro; NUM_BLENDSHAPES],
     head_filters: [OneEuro; 3],
+    /// The worn avatar's declared params (issue #18 phase 3). `Some` gates
+    /// output to exactly the declared forms/addresses; `None` falls back to
+    /// the blind-prefix float behavior.
+    avatar: Option<AvatarParamSet>,
 }
 
 impl Default for UnifiedMapper {
@@ -240,7 +272,22 @@ impl UnifiedMapper {
             head_calib: HeadCalib::new(config.calib_frames),
             filters: build_channel_filters(&config),
             head_filters: build_head_filters(&config),
+            avatar: None,
         }
+    }
+
+    /// Adopt (`Some`) or clear (`None`) an avatar's OSC config: resolves the
+    /// declared parameters against this mapper's name universe
+    /// ([`float_param_names`] + [`STATUS_PARAM_NAMES`]) once, so `map` only
+    /// does hash lookups. See the module docs (avatar-aware gating).
+    pub fn set_avatar_config(&mut self, config: Option<&AvatarOscConfig>) {
+        self.avatar =
+            config.map(|c| AvatarParamSet::resolve(c, &float_param_names(), &STATUS_PARAM_NAMES));
+    }
+
+    /// The currently active avatar param set, if any (for status display).
+    pub fn avatar_params(&self) -> Option<&AvatarParamSet> {
+        self.avatar.as_ref()
     }
 
     /// Produce the VRCFT-compatible parameter updates for one frame.
@@ -264,6 +311,21 @@ impl UnifiedMapper {
         let head_roll = deadzone(-(rel_roll / self.config.roll_max_rad), dz);
 
         let vals = param_values(&c, head_yaw, head_pitch, head_roll);
+
+        // Avatar-aware mode: emit only what the worn avatar declares, in the
+        // declared forms (float / bool / binary bits), at the exact declared
+        // addresses. The three status bools read true whenever a face is
+        // tracked, same as the fallback path below.
+        if let Some(set) = &self.avatar {
+            let mut out = Vec::new();
+            for (name, v) in &vals {
+                set.emit_value(name, v.clamp(-1.0, 1.0), &mut out);
+            }
+            for name in STATUS_PARAM_NAMES {
+                set.emit_status(name, true, &mut out);
+            }
+            return out;
+        }
 
         let mut out = Vec::with_capacity((vals.len() + 3) * self.prefixes.len());
         for prefix in &self.prefixes {
@@ -323,6 +385,9 @@ impl super::ArkitOscMapper for UnifiedMapper {
     }
     fn calibrate(&mut self, frames: &[ArkitFaceFrame]) {
         UnifiedMapper::calibrate(self, frames)
+    }
+    fn set_avatar_config(&mut self, config: Option<&AvatarOscConfig>) {
+        UnifiedMapper::set_avatar_config(self, config)
     }
 }
 
@@ -1007,6 +1072,114 @@ mod tests {
         }
         assert!(float_of(&last, "v2/JawOpen").abs() < 0.05);
         assert!((float_of(&last, "v2/EyeOpenLeft") - 1.0).abs() < 0.05);
+    }
+
+    // ---- Avatar-aware gating (issue #18 phases 2+3) ----
+
+    fn avatar_cfg(json: &str) -> AvatarOscConfig {
+        AvatarOscConfig::from_json(json).unwrap()
+    }
+
+    // Every canonical name is unique (the AvatarParamSet resolution keys on
+    // it) and the universe includes shapes, combined params, and head axes.
+    #[test]
+    fn float_param_names_are_unique_and_complete() {
+        let names = float_param_names();
+        let mut dedup = names.clone();
+        dedup.sort_unstable();
+        dedup.dedup();
+        assert_eq!(dedup.len(), names.len(), "canonical names must be unique");
+        for expected in [
+            "v2/JawOpen",
+            "v2/SmileFrown",
+            "v2/EyeLidLeft",
+            "v2/Head/Yaw",
+        ] {
+            assert!(names.contains(&expected), "{expected} missing");
+        }
+    }
+
+    // With an avatar config set, only declared params go out — at their
+    // exact declared addresses (arbitrary prefix), and the blind-prefix
+    // copies disappear.
+    #[test]
+    fn avatar_config_gates_output_to_declared_addresses() {
+        let mut m = UnifiedMapper::new(ArkitMappingConfig::default(), Vec::new());
+        m.set_avatar_config(Some(&avatar_cfg(
+            r#"{
+              "id": "avtr_x", "name": "x",
+              "parameters": [
+                {"name":"Odd/v2/JawOpen",
+                 "input":{"address":"/avatar/parameters/Odd/v2/JawOpen","type":"Float"}},
+                {"name":"LipTrackingActive",
+                 "input":{"address":"/avatar/parameters/LipTrackingActive","type":"Bool"}}
+              ]
+            }"#,
+        )));
+        let out = m.map(&neutral_frame());
+        assert_eq!(out.len(), 2, "exactly the declared params: {out:?}");
+        assert!(out
+            .iter()
+            .any(|p| p.name == "/avatar/parameters/Odd/v2/JawOpen"
+                && matches!(p.value, OscValue::Float(_))));
+        assert!(bool_of(&out, "/avatar/parameters/LipTrackingActive"));
+
+        // Clearing the config restores the blind-prefix fallback exactly.
+        m.set_avatar_config(None);
+        let out = m.map(&neutral_frame());
+        assert!(out.iter().any(|p| p.name == "v2/JawOpen"));
+        assert!(out.iter().any(|p| p.name == "FT/v2/JawOpen"));
+        assert!(bool_of(&out, "EyeTrackingActive"));
+    }
+
+    // Binary-only declaration: bits + Negative carry the value; the 1.0
+    // edge case saturates to all-ones through the whole mapper path.
+    #[test]
+    fn avatar_config_binary_bits_flow_through_map() {
+        let mut m = mapper(0); // calib_frames 0 → raw values flow through
+        m.set_avatar_config(Some(&avatar_cfg(
+            r#"{
+              "id": "avtr_b", "name": "b",
+              "parameters": [
+                {"name":"FT/v2/JawOpen1",
+                 "input":{"address":"/avatar/parameters/FT/v2/JawOpen1","type":"Bool"}},
+                {"name":"FT/v2/JawOpen2",
+                 "input":{"address":"/avatar/parameters/FT/v2/JawOpen2","type":"Bool"}}
+              ]
+            }"#,
+        )));
+        let open = frame(&[("jawOpen", 1.0)], HeadPose::default());
+        let mut last = Vec::new();
+        for _ in 0..30 {
+            last = m.map(&open);
+        }
+        assert_eq!(last.len(), 2);
+        assert!(bool_of(&last, "/avatar/parameters/FT/v2/JawOpen1"));
+        assert!(bool_of(&last, "/avatar/parameters/FT/v2/JawOpen2"));
+
+        // Closed jaw → both bits clear.
+        let closed = frame(&[], HeadPose::default());
+        let mut last = Vec::new();
+        for _ in 0..60 {
+            last = m.map(&closed);
+        }
+        assert!(!bool_of(&last, "/avatar/parameters/FT/v2/JawOpen1"));
+        assert!(!bool_of(&last, "/avatar/parameters/FT/v2/JawOpen2"));
+    }
+
+    // An avatar that declares no FT params at all: nothing is sent — same
+    // as VRCFT (its params all become irrelevant), NOT the blind fallback.
+    #[test]
+    fn avatar_without_ft_params_sends_nothing() {
+        let mut m = UnifiedMapper::new(ArkitMappingConfig::default(), Vec::new());
+        m.set_avatar_config(Some(&avatar_cfg(
+            r#"{"id":"avtr_plain","name":"plain","parameters":[
+                {"name":"GestureLeft",
+                 "input":{"address":"/avatar/parameters/GestureLeft","type":"Int"}}
+            ]}"#,
+        )));
+        assert!(m.avatar_params().unwrap().is_empty());
+        assert!(m.map(&neutral_frame()).is_empty());
     }
 
     /// Minimal seeded LCG for deterministic fuzz (mirrors mapping::arkit).
