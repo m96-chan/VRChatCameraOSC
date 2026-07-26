@@ -24,6 +24,7 @@
 mod encode;
 mod listen;
 mod monitor;
+pub mod oscquery;
 mod rate;
 mod udp;
 

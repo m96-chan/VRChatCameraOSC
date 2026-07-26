@@ -50,6 +50,13 @@ pub struct OscConfig {
     /// the avatar-aware `vrcft` profile — issue #18 phase 3). VRChat sends
     /// to 9001 by default; `0` disables the listener entirely.
     pub listen_port: u16,
+    /// OSCQuery discovery + advertisement (issue #18 phase 3b, `vrcft`
+    /// profile): browse mDNS for the VRChat client and fetch the avatar's
+    /// declared parameters over HTTP (covers VRChat on another machine),
+    /// and advertise our own `/avatar/change` listener so VRChat finds us
+    /// with zero setup. Default on; turn off for manually-configured ports.
+    /// CLI override: `--oscquery on|off`.
+    pub oscquery: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -164,6 +171,7 @@ impl Default for OscConfig {
             port: 9000,
             dry_run: false,
             listen_port: 9001,
+            oscquery: true,
         }
     }
 }

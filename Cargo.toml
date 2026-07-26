@@ -45,6 +45,10 @@ ureq = { version = "2", features = ["tls"] }
 # TUI
 ratatui = "0.29"
 crossterm = "0.28"
+# OSCQuery mDNS (issue #18 phase 3b): browse `_oscjson._tcp.local.` for the
+# VRChat client and advertise our own `_osc._udp`/`_oscjson._tcp` services.
+# Pure Rust, no async runtime — fits the std-thread design of osc::oscquery.
+mdns-sd = "0.20"
 
 [features]
 default = ["camera", "mesh-gpu"]

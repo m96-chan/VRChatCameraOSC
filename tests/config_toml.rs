@@ -287,6 +287,17 @@ fn listen_port_defaults_to_9001_and_is_configurable() {
     assert_eq!(cfg.osc.listen_port, 9051);
 }
 
+// OSCQuery (issue #18 phase 3b): [osc] oscquery, default ON.
+#[test]
+fn oscquery_defaults_on_and_is_configurable() {
+    assert!(Config::default().osc.oscquery);
+    // A config file written before the field existed still loads (default).
+    let cfg: Config = toml::from_str("[osc]\nport = 9000\n").unwrap();
+    assert!(cfg.osc.oscquery);
+    let cfg: Config = toml::from_str("[osc]\noscquery = false\n").unwrap();
+    assert!(!cfg.osc.oscquery);
+}
+
 #[test]
 fn avatar_config_dir_defaults_to_none_and_round_trips() {
     assert_eq!(Config::default().mapping.avatar_config_dir, None);

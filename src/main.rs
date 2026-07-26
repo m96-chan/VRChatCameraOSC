@@ -34,6 +34,7 @@ use vrchat_camera_osc::mapping::eye::{EyeRange, NativeEyeMapper};
 use vrchat_camera_osc::mapping::unified::UnifiedMapper;
 use vrchat_camera_osc::mapping::{ArkitOscMapper, Mapper};
 use vrchat_camera_osc::models;
+use vrchat_camera_osc::osc::oscquery::{MdnsVrchatDiscovery, OscQueryAdvertiser, OscQueryClient};
 use vrchat_camera_osc::osc::{AvatarChangeListener, MonitorSink, OscSink, UdpOscSender};
 use vrchat_camera_osc::pipeline::Pipeline;
 use vrchat_camera_osc::tracking::arkit::ArkitFaceTracker;
@@ -86,6 +87,8 @@ struct Args {
     mapping: Option<MappingProfile>,
     /// CLI override for `eye.native` (`--native-eye on|off`).
     native_eye: Option<bool>,
+    /// CLI override for `osc.oscquery` (`--oscquery on|off`).
+    oscquery: Option<bool>,
 }
 
 fn parse_args() -> Args {
@@ -100,6 +103,7 @@ fn parse_args() -> Args {
         backend: None,
         mapping: None,
         native_eye: None,
+        oscquery: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -148,11 +152,18 @@ fn parse_args() -> Args {
                     eprintln!("--native-eye expects 'on' or 'off' (got {other:?}) — using config")
                 }
             },
+            "--oscquery" => match it.next().as_deref() {
+                Some("on") => a.oscquery = Some(true),
+                Some("off") => a.oscquery = Some(false),
+                other => {
+                    eprintln!("--oscquery expects 'on' or 'off' (got {other:?}) — using config")
+                }
+            },
             "-h" | "--help" => {
                 println!(
                     "vrchat-camera-osc [--monitor] [--fake] [--frames N] \
                      [--backend mediapipe|fan] [--mapping custom10|vrcft] \
-                     [--native-eye on|off] \
+                     [--native-eye on|off] [--oscquery on|off] \
                      [--weights FAN.safetensors] [--detector S3FD.safetensors] \
                      [--detect-interval N] [--calibrate-frames N]"
                 );
@@ -315,17 +326,28 @@ fn build_arkit_tracker(detect_interval: Option<u32>) -> Option<Box<dyn ArkitFace
     }
 }
 
-/// Build the avatar-aware machinery for the `vrcft` profile (issue #18 phase
-/// 3): the config-dir scan (explicit `[mapping] avatar_config_dir` override,
-/// else per-platform VRChat defaults) plus the `/avatar/change` listener on
-/// `[osc] listen_port` (default 9001; 0 disables it). Also reports what was
-/// (or wasn't) found, so a silent fallback is visible to the user.
-fn build_avatar_watcher(cfg: &Config) -> AvatarWatcher {
+/// Build the avatar-aware machinery for the `vrcft` profile (issue #18
+/// phases 3 + 3b): the config-dir scan (explicit `[mapping]
+/// avatar_config_dir` override, else per-platform VRChat defaults), the
+/// `/avatar/change` listener on `[osc] listen_port` (default 9001; 0
+/// disables it), and — when `oscquery` is on — mDNS discovery of a
+/// (possibly remote) VRChat's OSCQuery endpoint plus our own advertisement
+/// so VRChat auto-discovers us. Also reports what was (or wasn't) found, so
+/// a silent fallback is visible to the user. The returned advertiser must be
+/// kept alive for the run (dropping it withdraws the mDNS advertisement).
+fn build_avatar_watcher(
+    cfg: &Config,
+    oscquery: bool,
+) -> (AvatarWatcher, Option<OscQueryAdvertiser>) {
     let dirs = avatar::config_dirs(cfg.mapping.avatar_config_dir.as_deref());
     match avatar::find_most_recent_config(&dirs) {
         Some(c) => eprintln!(
             "vrcft: gating to avatar '{}' ({}) from its OSC config",
             c.name, c.id
+        ),
+        None if oscquery => eprintln!(
+            "vrcft: no local avatar OSC config under {dirs:?} — trying OSCQuery \
+             discovery (blind-prefix fallback if that finds nothing)"
         ),
         None => eprintln!(
             "vrcft: no avatar OSC config found under {:?} — sending the full \
@@ -346,7 +368,48 @@ fn build_avatar_watcher(cfg: &Config) -> AvatarWatcher {
             }
         },
     };
-    AvatarWatcher::new(dirs, listener)
+    let mut watcher = AvatarWatcher::new(dirs, listener);
+
+    let mut advertiser = None;
+    if oscquery {
+        // Advertise ourselves (needs a live /avatar/change listen port —
+        // that is the OSC input we are advertising).
+        if cfg.osc.listen_port != 0 {
+            match OscQueryAdvertiser::start(cfg.osc.listen_port) {
+                Ok(adv) => {
+                    eprintln!(
+                        "oscquery: advertising '{}' — OSC on udp/{}, OSCQuery HTTP on tcp/{}{}",
+                        adv.instance_name(),
+                        cfg.osc.listen_port,
+                        adv.http_port(),
+                        if adv.mdns_active() {
+                            ""
+                        } else {
+                            " (mDNS inactive — HTTP endpoint only)"
+                        }
+                    );
+                    advertiser = Some(adv);
+                }
+                Err(e) => eprintln!(
+                    "oscquery: could not start the advertiser: {e:#} — \
+                     VRChat won't auto-discover this tracker"
+                ),
+            }
+        } else {
+            eprintln!("oscquery: [osc] listen_port = 0 — nothing to advertise");
+        }
+        // Discover VRChat's OSCQuery endpoint for avatar-parameter fetches.
+        match MdnsVrchatDiscovery::start() {
+            Ok(discovery) => {
+                watcher = watcher.with_oscquery(OscQueryClient::new(Box::new(discovery)));
+            }
+            Err(e) => eprintln!(
+                "oscquery: mDNS browse unavailable: {e:#} — \
+                 remote avatar-parameter discovery disabled this run"
+            ),
+        }
+    }
+    (watcher, advertiser)
 }
 
 fn main() -> Result<()> {
@@ -368,6 +431,9 @@ fn main() -> Result<()> {
     }
     let camera = build_camera(&cfg, args.fake);
     let sink = build_sink(&cfg)?;
+    // Kept alive for the whole run: dropping it withdraws our OSCQuery/mDNS
+    // advertisement (issue #18 phase 3b).
+    let mut _oscquery_advertiser: Option<OscQueryAdvertiser> = None;
     let mut pipeline = match backend {
         TrackingBackend::Mediapipe => {
             let tracker = build_arkit_tracker(args.detect_interval);
@@ -382,7 +448,10 @@ fn main() -> Result<()> {
             };
             let mut pipeline = Pipeline::new_arkit(camera, tracker, mapper, sink);
             if profile == MappingProfile::Vrcft {
-                pipeline = pipeline.with_avatar_watcher(build_avatar_watcher(&cfg));
+                let oscquery = args.oscquery.unwrap_or(cfg.osc.oscquery);
+                let (watcher, advertiser) = build_avatar_watcher(&cfg, oscquery);
+                _oscquery_advertiser = advertiser;
+                pipeline = pipeline.with_avatar_watcher(watcher);
             }
             if args.native_eye.unwrap_or(cfg.eye.native) {
                 pipeline = pipeline.with_native_eye(NativeEyeMapper::new(
