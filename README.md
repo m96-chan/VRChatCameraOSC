@@ -24,6 +24,9 @@ Realtime face tracking for VRChat, driven from your webcam and delivered over OS
 - **Hand tracking** — track hand/finger landmarks and drive avatar gestures. *(planned)*
 - **OSC output** — connect to VRChat over OSC and move your own avatar.
 - **Realtime face tracking → avatar** — map tracked landmarks to avatar parameters live.
+- **VRCFaceTracking-compatible output** (`--mapping vrcft`) — emit the Unified
+  Expressions `v2/` float parameters that VRCFT sends, so VRCFT-ready avatars
+  work with **zero avatar-side setup** (issue #18; float params — phase 1).
 - **TUI** — monitor and control everything from the terminal.
 
 ## Tech
@@ -53,6 +56,7 @@ swappable:
 | Tracking (default) | `tracking::arkit::ArkitFaceTracker` | `mediapipe::MediapipeTracker` — **YuNet** detector → rotated eyes-aligned ROI → **FaceMesh V2** (478 3-D landmarks, on **burn-wgpu** GPU with candle-onnx CPU fallback) → **Blendshape V2** (52 ARKit coefficients) + per-axis head rotation |
 | Tracking (`fan`) | `tracking::FaceTracker` | `fan::FanTracker` — the face-alignment **2DFAN4** net ported to pure-Rust **candle**, with `sfd::SfdDetector` (**S3FD**) auto-cropping first |
 | Mapping (default) | `mapping::arkit::ArkitMapper` | 52 ARKit coefficients + head pose → 10 avatar params, with per-channel neutral-baseline calibration (per-eye blink self-calibration so open→0, blink→1) and One-Euro smoothing |
+| Mapping (`vrcft`) | `mapping::unified::UnifiedMapper` | 52 ARKit coefficients → Unified Expressions shapes (VRCFT LiveLink correlation) → the VRCFT `v2/` float parameter set + `*TrackingActive` bools, same calibration/smoothing design; profile selected via `[mapping]` / `--mapping` (issue #18) |
 | Mapping (`fan`) | `mapping::Mapper` | iBUG-68 landmarks → the same 10 params via geometric ratios, clamped + smoothed |
 | OSC | `osc::OscSink` | `UdpOscSender` to VRChat, or `MonitorSink` dry-run |
 | Loop | `pipeline::Pipeline` | `capture → track → map → OSC`, driven by the TUI or headless monitor |
@@ -116,8 +120,9 @@ uv pip install --python .venv "torch>=2.2" "numpy<2" safetensors face-alignment 
 
 CLI flags: `--monitor` (headless), `--fake` (synthetic camera), `--frames N`
 (stop after N frames), `--backend mediapipe|fan` (overrides the config's
-`[tracking] backend`), `--weights PATH`, `--detector PATH` (FAN backend only;
-a custom path is never auto-downloaded), `--detect-interval N`
+`[tracking] backend`), `--mapping custom10|vrcft` (overrides `[mapping]
+profile`; see Avatar setup below), `--weights PATH`, `--detector PATH` (FAN
+backend only; a custom path is never auto-downloaded), `--detect-interval N`
 (see Performance below), `--calibrate-frames N` (see Calibration below; `0`
 skips calibration).
 
@@ -195,7 +200,28 @@ defines** — it doesn't create facial expressions on its own, and none of
 VRChat's built-in avatar parameters (`GestureLeft/Right`, `Viseme`, `AFK`,
 etc.) cover facial expression or head pose. A stock/default avatar, or any
 avatar that hasn't been specifically wired up, **will not react** to this
-app's output. To make an avatar respond, add these as **Float** VRC
+app's output.
+
+### Option 1 — VRCFT-ready avatars: `--mapping vrcft`, no setup (issue #18)
+
+If your avatar already supports **VRCFaceTracking / Unified Expressions**
+(most commercial face-tracking-ready avatars do), run with `--mapping vrcft`
+(or set `[mapping] profile = "vrcft"` in the config): the tracker emits the
+same `/avatar/parameters/<prefix>v2/<Name>` float parameters VRCFT sends —
+under both the bare and `FT/` prefixes by default (`[mapping] vrcft_prefixes`)
+— plus the `EyeTrackingActive` / `ExpressionTrackingActive` /
+`LipTrackingActive` bools that FT avatars gate their animator layers on. The
+avatar needs **no wizard and no Unity work**. Formulas are ported from VRCFT's
+own parameter definitions and its official LiveLink (ARKit) module; see
+[`src/mapping/unified.rs`](src/mapping/unified.rs) for sources and details.
+
+Current limits (phases 2–3 of issue #18): only **float** parameters are sent —
+avatars that declare exclusively *binary* (`v2/JawOpen1/2/4...`) FT parameters
+won't move yet — and there is no avatar-config/OSCQuery discovery, so the full
+float set is sent regardless of what the avatar declares. Requires the
+`mediapipe` backend (default).
+
+### Option 2 — custom 10-parameter setup (the `unity/` wizard) Otherwise (default `custom10` profile), add these as **Float** VRC
 Expression Parameters (Unity + VRChat SDK3) and drive blend shapes / bones
 from them in the FX Animator Controller:
 
@@ -236,6 +262,8 @@ OSC host/port, camera device, and tracking settings will be configurable from th
 - [ ] Hand / finger landmark extraction
 - [x] Landmark → VRChat OSC parameter mapping
 - [x] ARKit blendshapes → OSC mapping (per-eye blink self-calibration, One-Euro smoothing)
+- [x] VRCFaceTracking-compatible output — Unified Expressions `v2/` float params (issue #18 phase 1)
+- [ ] VRCFT binary parameter encoding + avatar-config/OSCQuery param gating (issue #18 phases 2–3)
 - [x] OSC sender (UDP) + dry-run monitor
 - [x] TUI: live values, status, and configuration
 - [x] Config file support

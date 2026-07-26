@@ -9,13 +9,15 @@
 //! - **Landmarks** ([`Pipeline::new`]): a 68-point [`FaceTracker`] (FAN) feeding
 //!   the geometric [`Mapper`].
 //! - **ARKit** ([`Pipeline::new_arkit`]): an [`ArkitFaceTracker`] (MediaPipe)
-//!   producing 52 blendshape coefficients + head pose, feeding [`ArkitMapper`].
+//!   producing 52 blendshape coefficients + head pose, feeding any
+//!   [`ArkitOscMapper`] — the 10-parameter `ArkitMapper` or the
+//!   VRCFT-compatible `UnifiedMapper` (issue #18).
 //!
-//! Both emit the same 10 OSC parameters, so everything downstream (sink, TUI,
-//! monitor mode) is stack-agnostic.
+//! Every mapper emits plain [`OscParam`]s, so everything downstream (sink,
+//! TUI, monitor mode) is stack- and profile-agnostic.
 
 use crate::capture::CameraSource;
-use crate::mapping::arkit::ArkitMapper;
+use crate::mapping::ArkitOscMapper;
 use crate::mapping::Mapper;
 use crate::osc::{OscParam, OscSink};
 use crate::tracking::arkit::ArkitFaceTracker;
@@ -42,9 +44,9 @@ enum Stack {
     },
     Arkit {
         tracker: Option<Box<dyn ArkitFaceTracker>>,
-        /// Boxed: `ArkitMapper` carries per-channel calibration + One-Euro
-        /// state and dwarfs the other variant (clippy `large_enum_variant`).
-        mapper: Box<ArkitMapper>,
+        /// Trait object: either mapping profile (10-param `ArkitMapper` or
+        /// VRCFT `UnifiedMapper`), chosen by config/CLI (issue #18).
+        mapper: Box<dyn ArkitOscMapper>,
     },
 }
 
@@ -71,19 +73,17 @@ impl Pipeline {
         }
     }
 
-    /// Build the ARKit-blendshape (MediaPipe) stack — issue #17.
+    /// Build the ARKit-blendshape (MediaPipe) stack — issue #17. The mapper
+    /// is any [`ArkitOscMapper`] (mapping profile — issue #18).
     pub fn new_arkit(
         camera: Box<dyn CameraSource>,
         tracker: Option<Box<dyn ArkitFaceTracker>>,
-        mapper: ArkitMapper,
+        mapper: Box<dyn ArkitOscMapper>,
         sink: Box<dyn OscSink>,
     ) -> Self {
         Self {
             camera,
-            stack: Stack::Arkit {
-                tracker,
-                mapper: Box::new(mapper),
-            },
+            stack: Stack::Arkit { tracker, mapper },
             sink,
         }
     }

@@ -27,9 +27,10 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use vrchat_camera_osc::capture::{CameraSource, FakeCamera, FpsCounter};
-use vrchat_camera_osc::config::{Config, TrackingBackend};
+use vrchat_camera_osc::config::{Config, MappingProfile, TrackingBackend};
 use vrchat_camera_osc::mapping::arkit::{ArkitMapper, ArkitMappingConfig};
-use vrchat_camera_osc::mapping::Mapper;
+use vrchat_camera_osc::mapping::unified::UnifiedMapper;
+use vrchat_camera_osc::mapping::{ArkitOscMapper, Mapper};
 use vrchat_camera_osc::models;
 use vrchat_camera_osc::osc::{MonitorSink, OscSink, UdpOscSender};
 use vrchat_camera_osc::pipeline::Pipeline;
@@ -79,6 +80,8 @@ struct Args {
     calibrate_frames: u32,
     /// CLI override for `tracking.backend` (`--backend mediapipe|fan`).
     backend: Option<TrackingBackend>,
+    /// CLI override for `mapping.profile` (`--mapping custom10|vrcft`).
+    mapping: Option<MappingProfile>,
 }
 
 fn parse_args() -> Args {
@@ -91,6 +94,7 @@ fn parse_args() -> Args {
         detect_interval: None,
         calibrate_frames: DEFAULT_CALIBRATE_FRAMES,
         backend: None,
+        mapping: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -125,10 +129,17 @@ fn parse_args() -> Args {
                     "--backend expects 'mediapipe' or 'fan' (got {other:?}) — using config"
                 ),
             },
+            "--mapping" => match it.next().as_deref() {
+                Some("custom10") => a.mapping = Some(MappingProfile::Custom10),
+                Some("vrcft") => a.mapping = Some(MappingProfile::Vrcft),
+                other => eprintln!(
+                    "--mapping expects 'custom10' or 'vrcft' (got {other:?}) — using config"
+                ),
+            },
             "-h" | "--help" => {
                 println!(
                     "vrchat-camera-osc [--monitor] [--fake] [--frames N] \
-                     [--backend mediapipe|fan] \
+                     [--backend mediapipe|fan] [--mapping custom10|vrcft] \
                      [--weights FAN.safetensors] [--detector S3FD.safetensors] \
                      [--detect-interval N] [--calibrate-frames N]"
                 );
@@ -295,12 +306,27 @@ fn main() -> Result<()> {
     cfg.validate()?;
 
     let backend = args.backend.unwrap_or(cfg.tracking.backend);
+    let profile = args.mapping.unwrap_or(cfg.mapping.profile);
+    if profile == MappingProfile::Vrcft && backend == TrackingBackend::Fan {
+        anyhow::bail!(
+            "--mapping vrcft requires the mediapipe backend — FAN's 68 geometric \
+             landmarks cannot drive Unified Expressions (issue #18)"
+        );
+    }
     let camera = build_camera(&cfg, args.fake);
     let sink = build_sink(&cfg)?;
     let mut pipeline = match backend {
         TrackingBackend::Mediapipe => {
             let tracker = build_arkit_tracker(args.detect_interval);
-            let mapper = ArkitMapper::new(ArkitMappingConfig::default());
+            let mapper: Box<dyn ArkitOscMapper> = match profile {
+                MappingProfile::Vrcft => Box::new(UnifiedMapper::new(
+                    ArkitMappingConfig::default(),
+                    cfg.mapping.vrcft_prefixes.clone(),
+                )),
+                MappingProfile::Custom10 => {
+                    Box::new(ArkitMapper::new(ArkitMappingConfig::default()))
+                }
+            };
             Pipeline::new_arkit(camera, tracker, mapper, sink)
         }
         TrackingBackend::Fan => {
@@ -370,8 +396,16 @@ fn run_monitor(
             println!("[frame {n}] {:?} no face / no tracker", outcome.frame_size);
         } else {
             for p in &outcome.params {
-                if let vrchat_camera_osc::osc::OscValue::Float(v) = p.value {
-                    println!("{} f {v:.4}", p.address());
+                match p.value {
+                    vrchat_camera_osc::osc::OscValue::Float(v) => {
+                        println!("{} f {v:.4}", p.address())
+                    }
+                    vrchat_camera_osc::osc::OscValue::Bool(v) => {
+                        println!("{} b {v}", p.address())
+                    }
+                    vrchat_camera_osc::osc::OscValue::Int(v) => {
+                        println!("{} i {v}", p.address())
+                    }
                 }
             }
             println!("-- frame {n} @ {:.1} fps --", fps.fps());

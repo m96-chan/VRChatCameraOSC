@@ -246,7 +246,7 @@ fn arkit_pipeline_wires_capture_to_osc() {
     let mut pipeline = Pipeline::new_arkit(
         Box::new(FakeCamera::new(320, 240)),
         Some(Box::new(StubArkitTracker(resting_arkit_frame()))),
-        ArkitMapper::new(ArkitMappingConfig::default()),
+        Box::new(ArkitMapper::new(ArkitMappingConfig::default())),
         Box::new(sink),
     );
 
@@ -274,7 +274,7 @@ fn arkit_calibrate_neutral_zeroes_resting_baselines_and_sends_no_osc() {
     let mut pipeline = Pipeline::new_arkit(
         Box::new(FakeCamera::new(320, 240)),
         Some(Box::new(StubArkitTracker(resting_arkit_frame()))),
-        ArkitMapper::new(ArkitMappingConfig::default()),
+        Box::new(ArkitMapper::new(ArkitMappingConfig::default())),
         Box::new(sink),
     );
 
@@ -300,6 +300,39 @@ fn arkit_calibrate_neutral_zeroes_resting_baselines_and_sends_no_osc() {
     }
 }
 
+// The VRCFT (Unified Expressions) mapping profile drives the same ARKit
+// pipeline through the ArkitOscMapper trait — issue #18.
+#[test]
+fn arkit_pipeline_with_vrcft_profile_emits_v2_params() {
+    use vrchat_camera_osc::mapping::unified::UnifiedMapper;
+
+    let recorded = Arc::new(Mutex::new(Vec::new()));
+    let sink = RecordingSink(recorded.clone());
+    let mut pipeline = Pipeline::new_arkit(
+        Box::new(FakeCamera::new(320, 240)),
+        Some(Box::new(StubArkitTracker(resting_arkit_frame()))),
+        Box::new(UnifiedMapper::new(
+            ArkitMappingConfig::default(),
+            Vec::new(),
+        )),
+        Box::new(sink),
+    );
+
+    let outcome = pipeline.step().unwrap();
+    assert_eq!(outcome.frame_size, (320, 240));
+    let names: Vec<&str> = outcome.params.iter().map(|p| p.name.as_str()).collect();
+    // Default prefixes: bare v2/ and FT/v2/ copies, plus status bools.
+    assert!(names.contains(&"v2/JawOpen"));
+    assert!(names.contains(&"FT/v2/JawOpen"));
+    assert!(names.contains(&"v2/EyeLidLeft"));
+    assert!(names.contains(&"EyeTrackingActive"));
+    assert!(names.contains(&"FT/LipTrackingActive"));
+    assert!(
+        recorded.lock().unwrap().len() > 100,
+        "the UE float set is much larger than the custom 10"
+    );
+}
+
 #[test]
 fn arkit_pipeline_without_tracker_sends_nothing() {
     let recorded = Arc::new(Mutex::new(Vec::new()));
@@ -307,7 +340,7 @@ fn arkit_pipeline_without_tracker_sends_nothing() {
     let mut pipeline = Pipeline::new_arkit(
         Box::new(FakeCamera::new(64, 48)),
         None,
-        ArkitMapper::new(ArkitMappingConfig::default()),
+        Box::new(ArkitMapper::new(ArkitMappingConfig::default())),
         Box::new(sink),
     );
     let outcome = pipeline.step().unwrap();

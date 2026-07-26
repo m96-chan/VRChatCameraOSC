@@ -280,8 +280,9 @@ impl Default for ArkitMappingConfig {
 /// signal. Ported from AvataCam `crates/app/src/track.rs` (self-contained
 /// math, no new dependency). Adaptive cutoff: smooths hard when the signal is
 /// slow (kills jitter), widens to let fast motion through with little lag.
+/// `pub(crate)`: shared with [`super::unified`] (issue #18).
 #[derive(Debug, Clone, Copy)]
-struct OneEuro {
+pub(crate) struct OneEuro {
     min_cutoff: f32,
     beta: f32,
     dcutoff: f32,
@@ -290,7 +291,7 @@ struct OneEuro {
 }
 
 impl OneEuro {
-    fn new(min_cutoff: f32, beta: f32) -> Self {
+    pub(crate) fn new(min_cutoff: f32, beta: f32) -> Self {
         Self {
             min_cutoff,
             beta,
@@ -305,7 +306,7 @@ impl OneEuro {
         1.0 / (1.0 + tau / dt)
     }
 
-    fn filter(&mut self, x: f32, dt: f32) -> f32 {
+    pub(crate) fn filter(&mut self, x: f32, dt: f32) -> f32 {
         let Some(xp) = self.x_prev else {
             self.x_prev = Some(x);
             return x;
@@ -385,16 +386,16 @@ impl BsCalib {
 /// `pitch`, in that fixed order), mirroring [`BsCalib`]'s accumulate-then-seed
 /// shape (AvataCam's `track.rs` "Neutral calibration (#28)" pattern, applied
 /// here per-axis instead of as a quaternion since [`HeadPose`] is already
-/// decomposed).
+/// decomposed). `pub(crate)`: shared with [`super::unified`] (issue #18).
 #[derive(Debug, Clone, Copy)]
-struct HeadCalib {
+pub(crate) struct HeadCalib {
     base: [f32; 3],
     n: u32,
     frames: u32,
 }
 
 impl HeadCalib {
-    fn new(frames: u32) -> Self {
+    pub(crate) fn new(frames: u32) -> Self {
         Self {
             base: [0.0; 3],
             n: 0,
@@ -402,14 +403,14 @@ impl HeadCalib {
         }
     }
 
-    fn seed(&mut self, avg: [f32; 3]) {
+    pub(crate) fn seed(&mut self, avg: [f32; 3]) {
         self.base = avg;
         self.n = self.frames;
     }
 
     /// Accumulate `h` into the running baseline if still within the
     /// calibration window; always returns the current baseline.
-    fn accumulate(&mut self, h: &HeadPose) -> [f32; 3] {
+    pub(crate) fn accumulate(&mut self, h: &HeadPose) -> [f32; 3] {
         if self.n < self.frames {
             let k = self.n as f32;
             self.base[0] = (self.base[0] * k + h.roll) / (k + 1.0);
@@ -568,10 +569,20 @@ impl ArkitMapper {
     }
 }
 
+impl super::ArkitOscMapper for ArkitMapper {
+    fn map(&mut self, frame: &ArkitFaceFrame) -> Vec<OscParam> {
+        ArkitMapper::map(self, frame)
+    }
+    fn calibrate(&mut self, frames: &[ArkitFaceFrame]) {
+        ArkitMapper::calibrate(self, frames)
+    }
+}
+
 /// Deadzone with continuous rescale: `|v| <= dz` reads exactly 0, and the
 /// remaining span rescales so the output still reaches ±1 at input ±1 (no
 /// dead range at the top, no step at the threshold).
-fn deadzone(v: f32, dz: f32) -> f32 {
+/// `pub(crate)`: shared with [`super::unified`] (issue #18).
+pub(crate) fn deadzone(v: f32, dz: f32) -> f32 {
     if v.abs() <= dz {
         0.0
     } else {

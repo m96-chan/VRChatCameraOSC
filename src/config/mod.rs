@@ -35,6 +35,7 @@ pub struct Config {
     pub osc: OscConfig,
     pub camera: CameraConfig,
     pub tracking: TrackingConfig,
+    pub mapping: MappingConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -63,6 +64,46 @@ pub struct TrackingConfig {
     pub smoothing: f32,
     /// Which face-tracking backend drives the pipeline (issue #17).
     pub backend: TrackingBackend,
+}
+
+/// Output mapping profile selection (issue #18).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct MappingConfig {
+    /// Which OSC parameter set is emitted (issue #18).
+    pub profile: MappingProfile,
+    /// Address prefixes for the `vrcft` profile: each parameter is sent once
+    /// per prefix (`""` → `v2/JawOpen`, `"FT/"` → `FT/v2/JawOpen`, ...).
+    /// Phase 1 has no avatar-config discovery, so the common conventions are
+    /// covered by default; VRChat ignores undeclared addresses.
+    pub vrcft_prefixes: Vec<String>,
+}
+
+impl Default for MappingConfig {
+    fn default() -> Self {
+        Self {
+            profile: MappingProfile::default(),
+            vrcft_prefixes: crate::mapping::unified::DEFAULT_PREFIXES
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+        }
+    }
+}
+
+/// Which OSC parameter set the mapper emits (issue #18):
+/// - `custom10` (default): this app's original 10 parameters, wired by the
+///   `unity/` wizard.
+/// - `vrcft`: VRCFaceTracking-compatible Unified Expressions `v2/` floats —
+///   works out of the box on VRCFT-ready avatars. Requires the `mediapipe`
+///   backend. Default until the vrcft profile passes its end-to-end VRChat
+///   demo (recorded in issue #18) — revisit then.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum MappingProfile {
+    #[default]
+    Custom10,
+    Vrcft,
 }
 
 /// Face-tracking backend selection (issue #17). `mediapipe` (default) is the

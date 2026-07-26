@@ -80,6 +80,18 @@ use crate::osc::OscParam;
 use crate::tracking::{FaceLandmarks, Landmark};
 
 pub mod arkit;
+pub mod unified;
+
+/// Common interface over the mappers that consume ARKit-style frames
+/// ([`crate::tracking::arkit::ArkitFaceFrame`]), so the pipeline can hold
+/// either the 10-parameter [`arkit::ArkitMapper`] or the VRCFT-compatible
+/// [`unified::UnifiedMapper`] (issue #18) behind one trait object.
+pub trait ArkitOscMapper {
+    /// Produce the OSC parameter updates for one frame.
+    fn map(&mut self, frame: &crate::tracking::arkit::ArkitFaceFrame) -> Vec<OscParam>;
+    /// Re-derive the neutral baselines from relaxed forward-facing samples.
+    fn calibrate(&mut self, frames: &[crate::tracking::arkit::ArkitFaceFrame]);
+}
 
 /// Output parameter names, in a stable emission order.
 const PARAM_NAMES: [&str; 10] = [
