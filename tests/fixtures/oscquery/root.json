@@ -1,0 +1,42 @@
+{
+  "FULL_PATH": "/",
+  "ACCESS": 0,
+  "CONTENTS": {
+    "avatar": {
+      "FULL_PATH": "/avatar",
+      "ACCESS": 0,
+      "CONTENTS": {
+        "change": {
+          "FULL_PATH": "/avatar/change",
+          "ACCESS": 3,
+          "TYPE": "s",
+          "VALUE": ["avtr_00000000-0000-4000-8000-00000000c0de"]
+        },
+        "parameters": {
+          "FULL_PATH": "/avatar/parameters",
+          "ACCESS": 0,
+          "CONTENTS": {
+            "v2": {
+              "FULL_PATH": "/avatar/parameters/v2",
+              "ACCESS": 0,
+              "CONTENTS": {
+                "SmileFrownRight": {
+                  "FULL_PATH": "/avatar/parameters/v2/SmileFrownRight",
+                  "ACCESS": 3,
+                  "TYPE": "f",
+                  "VALUE": [0.0]
+                }
+              }
+            },
+            "ExpressionTrackingActive": {
+              "FULL_PATH": "/avatar/parameters/ExpressionTrackingActive",
+              "ACCESS": 3,
+              "TYPE": "T",
+              "VALUE": [true]
+            }
+          }
+        }
+      }
+    }
+  }
+}

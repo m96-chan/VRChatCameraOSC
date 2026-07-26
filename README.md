@@ -29,7 +29,9 @@ Realtime face tracking for VRChat, driven from your webcam and delivered over OS
   with **zero avatar-side setup** (issue #18). **Avatar-aware**: reads the
   worn avatar's OSC config (and follows `/avatar/change`) to send exactly the
   parameters it declares — float, bool, and **binary** (`<Name>1/2/4/8` +
-  `Negative`) forms — at their exact addresses.
+  `Negative`) forms — at their exact addresses. **OSCQuery** (mDNS) makes
+  both directions work with a VRChat on another machine, and lets VRChat
+  auto-discover the tracker with no port setup.
 - **Native eye tracking** (default ON) — gaze + blink over VRChat's own
   `/tracking/eye/*` OSC endpoints, which drive the avatar's **existing eye
   bones directly** — works on any avatar, no parameters, no wizard (issue #19).
@@ -64,6 +66,7 @@ swappable:
 | Mapping (default) | `mapping::arkit::ArkitMapper` | 52 ARKit coefficients + head pose → 10 avatar params, with per-channel neutral-baseline calibration (per-eye blink self-calibration so open→0, blink→1) and One-Euro smoothing |
 | Mapping (`vrcft`) | `mapping::unified::UnifiedMapper` | 52 ARKit coefficients → Unified Expressions shapes (VRCFT LiveLink correlation) → the VRCFT `v2/` parameter set + `*TrackingActive` bools, same calibration/smoothing design; profile selected via `[mapping]` / `--mapping` (issue #18) |
 | Avatar gating (`vrcft`) | `mapping::avatar` + `osc::AvatarChangeListener` | reads VRChat's per-avatar OSC config JSON and follows `/avatar/change` (nonblocking listen on `[osc] listen_port`, default 9001) → send only declared params at exact addresses, in declared float/bool/binary forms (issue #18 phases 2–3) |
+| OSCQuery (`vrcft`) | `osc::oscquery` | mDNS (`mdns-sd`) advertisement of our OSC input (`_osc._udp` + `_oscjson._tcp` with a minimal HTTP `?HOST_INFO`/root-node responder) so VRChat auto-discovers us, plus discovery of `VRChat-Client-*` and HTTP fetch of the avatar's declared parameters — local-file → OSCQuery → blind-prefix priority (issue #18 phase 3b) |
 | Eye (native) | `mapping::eye::NativeEyeMapper` | 12 eye channels → `/tracking/eye/LeftRightPitchYaw` (degrees) + `EyesClosedAmount`, appended to either profile's output; `[eye]` / `--native-eye` (issue #19) |
 | Mapping (`fan`) | `mapping::Mapper` | iBUG-68 landmarks → the same 10 params via geometric ratios, clamped + smoothed |
 | OSC | `osc::OscSink` | `UdpOscSender` to VRChat, or `MonitorSink` dry-run |
@@ -130,7 +133,8 @@ CLI flags: `--monitor` (headless), `--fake` (synthetic camera), `--frames N`
 (stop after N frames), `--backend mediapipe|fan` (overrides the config's
 `[tracking] backend`), `--mapping custom10|vrcft` (overrides `[mapping]
 profile`; see Avatar setup below), `--native-eye on|off` (overrides `[eye]
-native`; see Avatar setup below), `--weights PATH`, `--detector PATH` (FAN
+native`; see Avatar setup below), `--oscquery on|off` (overrides `[osc]
+oscquery`; see Avatar setup below), `--weights PATH`, `--detector PATH` (FAN
 backend only; a custom path is never auto-downloaded), `--detect-interval N`
 (see Performance below), `--calibrate-frames N` (see Calibration below; `0`
 skips calibration).
@@ -253,10 +257,31 @@ followed live via VRChat's `/avatar/change` OSC output; at startup the most
 recently modified avatar config is used as a best-effort guess. See
 [`src/mapping/avatar.rs`](src/mapping/avatar.rs).
 
+**OSCQuery — remote-host VRChat, zero setup** (issue #18 phase 3b, on by
+default): the tracker also speaks
+[OSCQuery](https://github.com/vrchat-community/vrc-oscquery-lib), in both
+directions, like VRCFT does. It **advertises itself** over mDNS
+(`_osc._udp` + `_oscjson._tcp`, instance `VRChatCameraOSC-<hex>`, with a
+minimal HTTP endpoint serving `?HOST_INFO` and an address tree declaring
+`/avatar/change`), so VRChat — on the same machine **or another host on the
+LAN** — auto-discovers the tracker and starts sending it `/avatar/change`
+with no VRChat-side configuration. And it **discovers VRChat** the same way
+(`_oscjson._tcp`, `VRChat-Client-*`) and fetches the worn avatar's declared
+parameters over HTTP, so avatar-aware gating above works even when the
+local config-file directory doesn't exist (VRChat on another machine).
+Source priority: local config file → OSCQuery fetch → blind-prefix
+fallback. Every failure (no mDNS, HTTP error, malformed JSON) degrades to
+the next source; nothing crashes the loop. See
+[`src/osc/oscquery.rs`](src/osc/oscquery.rs).
+
 Related config keys (`config.toml`):
 
 - `[osc] listen_port` — UDP port for VRChat's OSC output (`/avatar/change`).
   Default `9001` (VRChat's default); `0` disables the listener.
+- `[osc] oscquery` — OSCQuery advertisement + discovery (above). Default
+  `true`; set `false` (or `--oscquery off`) when you configure ports
+  manually and don't want mDNS traffic. `listen_port = 0` also disables the
+  advertisement (there'd be nothing to advertise).
 - `[mapping] avatar_config_dir` — explicit avatar-OSC-config directory.
   Unset → auto-discovery: `%USERPROFILE%\AppData\LocalLow\VRChat\VRChat\OSC`
   on Windows, the Steam/Proton prefix
@@ -264,12 +289,14 @@ Related config keys (`config.toml`):
   when VRChat runs on another machine — copy/mount its `OSC` folder and
   point this at it.
 - `[mapping] vrcft_prefixes` — **fallback only**: when no avatar config is
-  found (or the worn avatar has none), the full float set is sent blind under
-  each prefix (default `""` and `"FT/"`), exactly the phase-1 behavior.
-  VRChat ignores undeclared addresses.
+  found (or the worn avatar has none) **and** OSCQuery finds nothing, the
+  full float set is sent blind under each prefix (default `""` and `"FT/"`),
+  exactly the phase-1 behavior. VRChat ignores undeclared addresses.
 
-Current limits: OSCQuery discovery (for remote-host setups without a copied
-config dir) is not implemented. Requires the `mediapipe` backend (default).
+Current limits: requires the `mediapipe` backend (default). If a *remote*
+VRChat's mDNS advertisement only carries a loopback address (older VRChat
+builds always advertise `127.0.0.1`), it cannot be resolved from another
+machine — copy/mount its `OSC` folder and use `avatar_config_dir` instead.
 
 ### Option 2 — custom 10-parameter setup (the `unity/` wizard) Otherwise (default `custom10` profile), add these as **Float** VRC
 Expression Parameters (Unity + VRChat SDK3) and drive blend shapes / bones
@@ -314,7 +341,7 @@ OSC host/port, camera device, and tracking settings will be configurable from th
 - [x] ARKit blendshapes → OSC mapping (per-eye blink self-calibration, One-Euro smoothing)
 - [x] VRCFaceTracking-compatible output — Unified Expressions `v2/` float params (issue #18 phase 1)
 - [x] VRCFT binary parameter encoding + avatar-config param gating with `/avatar/change` tracking (issue #18 phases 2–3)
-- [ ] OSCQuery avatar-parameter discovery for remote-host setups (issue #18 leftover)
+- [x] OSCQuery: mDNS advertisement + remote avatar-parameter discovery (issue #18 phase 3b)
 - [x] Native eye tracking — `/tracking/eye/*` gaze + blink, any avatar, zero setup (issue #19)
 - [ ] Tongue tracking — needs a model with a tongue signal; R&D (issue #20)
 - [x] OSC sender (UDP) + dry-run monitor

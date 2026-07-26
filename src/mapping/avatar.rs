@@ -42,6 +42,7 @@ use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
+use crate::osc::oscquery::OscQueryClient;
 use crate::osc::{AvatarChangeListener, OscParam};
 
 // ---------------------------------------------------------------------------
@@ -456,15 +457,21 @@ impl AvatarParamSet {
 // ---------------------------------------------------------------------------
 
 /// Tracks which avatar is worn: an optional nonblocking `/avatar/change`
-/// listener plus the config-dir scan. Owned by the pipeline and polled once
-/// per step (see `crate::osc::listen` module docs for why polling, not a
-/// thread — only the single nonblocking recv is on the hot path; the
-/// filesystem is touched exclusively when the avatar actually changes).
+/// listener plus the config-dir scan, with an optional OSCQuery fallback
+/// (issue #18 phase 3b). Owned by the pipeline and polled once per step
+/// (see `crate::osc::listen` module docs for why polling, not a thread —
+/// only the single nonblocking recv is on the hot path; the filesystem and
+/// the network are touched exclusively when the avatar actually changes).
+///
+/// Source priority: **local config file → OSCQuery fetch → `None`** (the
+/// caller's blind-prefix fallback). The local file is exact (id + name +
+/// declared params) and free; OSCQuery covers a VRChat on another machine.
 #[derive(Debug)]
 pub struct AvatarWatcher {
     listener: Option<AvatarChangeListener>,
     dirs: Vec<PathBuf>,
     current_id: Option<String>,
+    oscquery: Option<OscQueryClient>,
 }
 
 impl AvatarWatcher {
@@ -473,27 +480,46 @@ impl AvatarWatcher {
             listener,
             dirs,
             current_id: None,
+            oscquery: None,
         }
     }
 
-    /// Startup best-effort pick: the most recently modified avatar config
-    /// (see [`find_most_recent_config`]). `None` when nothing is found —
-    /// the mapper then stays in blind-prefix fallback mode.
+    /// Attach an OSCQuery client, consulted whenever the local config scan
+    /// comes up empty (issue #18 phase 3b).
+    pub fn with_oscquery(mut self, client: OscQueryClient) -> Self {
+        self.oscquery = Some(client);
+        self
+    }
+
+    /// Startup best-effort pick: the most recently modified local avatar
+    /// config (see [`find_most_recent_config`]), else an OSCQuery fetch
+    /// (waiting briefly for mDNS discovery). `None` when neither source has
+    /// anything — the mapper then stays in blind-prefix fallback mode.
     pub fn initial_config(&mut self) -> Option<AvatarOscConfig> {
-        let cfg = find_most_recent_config(&self.dirs)?;
-        self.current_id = Some(cfg.id.clone());
+        if let Some(cfg) = find_most_recent_config(&self.dirs) {
+            self.current_id = Some(cfg.id.clone());
+            return Some(cfg);
+        }
+        let cfg = self.oscquery.as_mut()?.fetch_initial()?;
+        if !cfg.id.is_empty() {
+            self.current_id = Some(cfg.id.clone());
+        }
         Some(cfg)
     }
 
-    /// Nonblocking poll. `None` = no avatar change; `Some(Some(cfg))` = a
-    /// new avatar whose config was found; `Some(None)` = a new avatar with
-    /// no discoverable config (the caller falls back to blind mode).
+    /// Nonblocking poll (an OSCQuery fetch only happens when the avatar
+    /// actually changed and no local config matches — a rare, human-scale
+    /// event, never the frame hot path). `None` = no avatar change;
+    /// `Some(Some(cfg))` = a new avatar whose config was found;
+    /// `Some(None)` = a new avatar with no discoverable config (the caller
+    /// falls back to blind mode).
     pub fn poll(&mut self) -> Option<Option<AvatarOscConfig>> {
         let id = self.listener.as_mut()?.poll_avatar_change()?;
         if self.current_id.as_deref() == Some(id.as_str()) {
             return None; // same avatar re-announced — keep the active set
         }
-        let cfg = find_config_by_id(&self.dirs, &id);
+        let cfg = find_config_by_id(&self.dirs, &id)
+            .or_else(|| self.oscquery.as_mut().and_then(|c| c.fetch(&id)));
         self.current_id = Some(id);
         Some(cfg)
     }
