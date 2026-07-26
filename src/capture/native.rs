@@ -1,6 +1,6 @@
-//! Native webcam backend — AVFoundation on macOS, V4L2 on Linux (gated on
-//! `target_os` + the `camera` feature; see `Cargo.toml`'s per-target
-//! `nokhwa` dependencies).
+//! Native webcam backend — AVFoundation on macOS, V4L2 on Linux,
+//! MediaFoundation on Windows (gated on `target_os` + the `camera` feature;
+//! see `Cargo.toml`'s per-target `nokhwa` dependencies).
 //!
 //! This is intentionally thin: it wires nokhwa's per-platform backend (picked
 //! automatically via [`nokhwa::utils::ApiBackend::Auto`]) to the
@@ -101,7 +101,9 @@ impl CameraSource for NativeCamera {
 /// Request camera permission where the platform needs one (macOS). nokhwa
 /// resolves the prompt via a callback; a denied/pending grant surfaces later
 /// as an open/query error, which we translate into a clear message. On
-/// backends without a permission model (e.g. V4L2 on Linux) this is a no-op.
+/// backends without a permission model (e.g. V4L2 on Linux, MediaFoundation
+/// on Windows) nokhwa's `nokhwa_check`/`nokhwa_initialize` are no-op
+/// fallbacks that report "granted".
 fn request_permission() {
     if !nokhwa::nokhwa_check() {
         nokhwa::nokhwa_initialize(|_granted| {});
