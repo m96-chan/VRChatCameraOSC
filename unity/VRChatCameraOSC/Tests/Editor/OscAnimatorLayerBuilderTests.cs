@@ -173,9 +173,20 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             Assert.AreEqual(AnimatorLayerBlendingMode.Override, layer.blendingMode);
             Assert.IsTrue(_controller.parameters.Any(p => p.name == "v2/Head/Roll"));
 
+            // Buffered entry (issue #25 fifth attempt): an empty Init default
+            // state transitions instantly into the motion state so the
+            // tracking control's OnStateEnter reliably fires in the client.
+            Assert.AreEqual(2, layer.stateMachine.states.Length);
+            Assert.AreEqual("OSC_v2_Head_Roll_Init", layer.stateMachine.defaultState.name);
+            var initTransition = layer.stateMachine.defaultState.transitions.Single();
+            Assert.IsTrue(initTransition.hasExitTime);
+            Assert.AreEqual(0f, initTransition.exitTime, 1e-6f);
+            Assert.AreEqual("OSC_v2_Head_Roll", initTransition.destinationState.name);
+
             // Guard against useAutomaticThresholds rewriting the -1/0/1
             // spread (same failure mode the eyelid tree hit — issue #21).
-            var tree = (BlendTree)layer.stateMachine.states.Single().state.motion;
+            var tree = (BlendTree)layer.stateMachine.states
+                .Single(s => s.state.name == "OSC_v2_Head_Roll").state.motion;
             Assert.IsFalse(tree.useAutomaticThresholds);
             CollectionAssert.AreEqual(
                 new[] { -1f, 0f, 1f },
@@ -230,7 +241,8 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
 
             var layer = _controller.layers.First(l => l.name == "OSC_v2_Head_Roll");
-            var state = layer.stateMachine.states.Single().state;
+            var state = layer.stateMachine.states
+                .Single(s => s.state.name == "OSC_v2_Head_Roll").state;
             var behaviours = state.behaviours.OfType<VRCAnimatorTrackingControl>().ToArray();
 
             Assert.AreEqual(1, behaviours.Length, "exactly one VRCAnimatorTrackingControl must be attached");

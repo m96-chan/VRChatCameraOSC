@@ -140,7 +140,16 @@ namespace VRChatCameraOsc.AvatarSetup
             // head that Animation-releases from IK, so use plain Override
             // blending with constant clips; the head-only AvatarMask keeps
             // this layer from touching anything else.
-            AddLayer(controller, paramName, tree, AnimatorLayerBlendingMode.Override, GetOrCreateHeadOnlyMask(controller), AddHeadTrackingControlBehaviour);
+            //
+            // bufferEntryState (issue #25 fifth attempt): VRChat is known to
+            // miss State Behaviours on a layer's initial state at avatar
+            // load — if the VRCAnimatorTrackingControl never fires, Desktop
+            // head IK keeps the bone and the layer is inert regardless of
+            // construction. The classic workaround is an empty default state
+            // that immediately transitions into the real state, so
+            // OnStateEnter (and the tracking control) fires post-init.
+            AddLayer(controller, paramName, tree, AnimatorLayerBlendingMode.Override,
+                GetOrCreateHeadOnlyMask(controller), AddHeadTrackingControlBehaviour, bufferEntryState: true);
         }
 
         /// <summary>
@@ -251,6 +260,22 @@ namespace VRChatCameraOsc.AvatarSetup
                         AssetDatabase.RemoveObjectFromAsset(behaviour);
                         Object.DestroyImmediate(behaviour, true);
                     }
+
+                    // Transitions (the buffered-entry Init state has one) and
+                    // the AnimatorState objects themselves are sub-assets
+                    // too; destroying the state machine does not take them
+                    // with it.
+                    foreach (var transition in childState.state.transitions)
+                    {
+                        if (transition == null)
+                        {
+                            continue;
+                        }
+                        AssetDatabase.RemoveObjectFromAsset(transition);
+                        Object.DestroyImmediate(transition, true);
+                    }
+                    AssetDatabase.RemoveObjectFromAsset(childState.state);
+                    Object.DestroyImmediate(childState.state, true);
                 }
                 AssetDatabase.RemoveObjectFromAsset(layer.stateMachine);
                 Object.DestroyImmediate(layer.stateMachine, true);
@@ -330,7 +355,8 @@ namespace VRChatCameraOsc.AvatarSetup
             BlendTree tree,
             AnimatorLayerBlendingMode blendingMode,
             AvatarMask mask,
-            System.Action<AnimatorState> configureState = null)
+            System.Action<AnimatorState> configureState = null,
+            bool bufferEntryState = false)
         {
             var layerName = LayerNameFor(paramName);
             var layers = controller.layers.ToList();
@@ -345,8 +371,25 @@ namespace VRChatCameraOsc.AvatarSetup
             var state = stateMachine.AddState(layerName);
             state.motion = tree;
             state.writeDefaultValues = false;
-            stateMachine.defaultState = state;
             configureState?.Invoke(state);
+            if (bufferEntryState)
+            {
+                // Empty default state → instant exit-time transition into the
+                // real state, so its State Behaviours reliably fire in the
+                // VRChat client (behaviours on the initial state can be
+                // missed at avatar load — see AddHeadPoseLayer).
+                var init = stateMachine.AddState(layerName + "_Init");
+                init.writeDefaultValues = false;
+                var t = init.AddTransition(state);
+                t.hasExitTime = true;
+                t.exitTime = 0f;
+                t.duration = 0f;
+                stateMachine.defaultState = init;
+            }
+            else
+            {
+                stateMachine.defaultState = state;
+            }
 
             layers.Add(new AnimatorControllerLayer
             {
