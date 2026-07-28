@@ -97,6 +97,11 @@ const HEAD_PITCH_GAIN: f32 = 1.0;
 /// absorb the rest.
 const NOSE_DEPTH_RATIO: f32 = 0.58;
 
+/// Nose-tip drop below the eye line as a fraction of the inter-ocular
+/// distance (canonical-face geometry) — compensated in the 2D pitch cue so
+/// its raw value rests near zero (see `head_pose`).
+const NOSE_DROP_RATIO: f32 = 0.33;
+
 /// World-space landmark (x right/subject-left, y up, z toward viewer) from a
 /// normalized-image-space FaceMesh point (x right, y down, z more-negative
 /// = closer to camera).
@@ -106,18 +111,6 @@ fn to_world(p: [f32; 3]) -> [f32; 3] {
 
 fn sub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
     [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
-}
-
-/// Active right-handed rotation about world +Z by `theta` radians.
-fn rotate_z(theta: f32, v: [f32; 3]) -> [f32; 3] {
-    let (s, c) = theta.sin_cos();
-    [v[0] * c - v[1] * s, v[0] * s + v[1] * c, v[2]]
-}
-
-/// Active right-handed rotation about world +Y by `theta` radians.
-fn rotate_y(theta: f32, v: [f32; 3]) -> [f32; 3] {
-    let (s, c) = theta.sin_cos();
-    [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c]
 }
 
 /// Estimate head orientation from the 478 landmarks as a [`HeadPose`],
@@ -146,10 +139,8 @@ pub fn head_pose(points: &[[f32; 3]]) -> HeadPose {
     let a = |i: usize| to_world(points[i]);
     // 33 = right-eye outer, 263 = left-eye outer; 10 = forehead top, 152 = chin.
     let right = sub(a(263), a(33)); // subject right eye -> left eye (head +X)
-    let up0 = sub(a(10), a(152)); // chin -> forehead (head +Y-ish)
     let r_plane = (right[0] * right[0] + right[1] * right[1]).sqrt();
-    let u_plane = (up0[0] * up0[0] + up0[1] * up0[1]).sqrt();
-    if r_plane < 1e-4 || u_plane < 1e-4 {
+    if r_plane < 1e-4 {
         return HeadPose::default();
     }
 
@@ -168,15 +159,23 @@ pub fn head_pose(points: &[[f32; 3]]) -> HeadPose {
     // neutral calibration (deliberate divergence from AvataCam #225 here).
     let nose = a(1);
     let mid = [(a(33)[0] + a(263)[0]) * 0.5, (a(33)[1] + a(263)[1]) * 0.5];
-    let x_off =
-        (nose[0] - mid[0]) * (right[0] / r_plane) + (nose[1] - mid[1]) * (right[1] / r_plane);
+    let eye_dir = [right[0] / r_plane, right[1] / r_plane];
+    let off = [nose[0] - mid[0], nose[1] - mid[1]];
+    let x_off = off[0] * eye_dir[0] + off[1] * eye_dir[1];
     let mut yaw = (x_off / (r_plane * NOSE_DEPTH_RATIO)).atan();
 
-    // Pitch must be the de-rotated (ZYX-consistent) third angle, not the raw
-    // chin->forehead tilt (#234): de-rotating the vertical vector by the
-    // measured roll+yaw first keeps a pitched-neck turn reading as pure yaw.
-    let u = rotate_y(-yaw, rotate_z(-roll, up0));
-    let mut pitch = u[2].atan2((u[0] * u[0] + u[1] * u[1]).sqrt());
+    // Pitch (issue #27 follow-up): the same 2D nose cue, perpendicular
+    // component — the previous chin→forehead z-tilt read FaceMesh depth,
+    // and real-face z warp under yaw leaked into pitch symmetrically
+    // ("looking straight left reads up-left"). The nose sits
+    // NOSE_DROP_RATIO×IOD below the eye line on the canonical face; the
+    // anatomical drop is compensated here so the raw value rests near 0
+    // and the tanh ceiling stays symmetric (per-user residual is absorbed
+    // by the downstream neutral calibration, like every other channel).
+    // With this, the whole head estimator is z-free.
+    let up_dir = [-eye_dir[1], eye_dir[0]];
+    let y_off = off[0] * up_dir[0] + off[1] * up_dir[1] + NOSE_DROP_RATIO * r_plane;
+    let mut pitch = (y_off / (r_plane * NOSE_DEPTH_RATIO)).atan();
 
     yaw *= HEAD_YAW_GAIN;
     pitch *= HEAD_PITCH_GAIN;
@@ -190,9 +189,10 @@ pub fn head_pose(points: &[[f32; 3]]) -> HeadPose {
     HeadPose {
         roll: soft(roll),
         yaw: soft(yaw),
-        // Sign flip: AvataCam's raw pitch is positive = looking down;
-        // `HeadPose::pitch` is positive = looking up.
-        pitch: -soft(pitch),
+        // The 2D nose cue already reads positive = nose above its neutral
+        // drop = looking up, matching `HeadPose::pitch` directly (the
+        // AvataCam-era sign flip died with the z-based cue).
+        pitch: soft(pitch),
     }
 }
 
@@ -434,6 +434,18 @@ mod head_pose_tests {
         ]
     }
 
+    /// Active right-handed rotation about world +Z by `theta` radians.
+    fn rotate_z(theta: f32, v: [f32; 3]) -> [f32; 3] {
+        let (s, c) = theta.sin_cos();
+        [v[0] * c - v[1] * s, v[0] * s + v[1] * c, v[2]]
+    }
+
+    /// Active right-handed rotation about world +Y by `theta` radians.
+    fn rotate_y(theta: f32, v: [f32; 3]) -> [f32; 3] {
+        let (s, c) = theta.sin_cos();
+        [v[0] * c + v[2] * s, v[1], -v[0] * s + v[2] * c]
+    }
+
     fn rotate_x(theta: f32, v: [f32; 3]) -> [f32; 3] {
         let (s, c) = theta.sin_cos();
         [v[0], v[1] * c - v[2] * s, v[1] * s + v[2] * c]
@@ -471,6 +483,28 @@ mod head_pose_tests {
     /// subtracted before comparing against an expected sign/magnitude.
     fn neutral_pitch_bias() -> f32 {
         head_pose(&landmarks(0.0, 0.0, 0.0)).pitch
+    }
+
+    /// Real-face z warp under yaw leaked into PITCH (issue #27 follow-up:
+    /// looking straight left/right pushed the avatar's head up-left /
+    /// up-right symmetrically) — the whole head estimator must be z-free.
+    /// Scaling z arbitrarily while yawing must leave pitch unchanged.
+    #[test]
+    fn pitch_immune_to_z_warp_under_yaw() {
+        for yaw_deg in [-30.0f32, 30.0] {
+            let clean = head_pose(&landmarks(0.0, yaw_deg.to_radians(), 0.0));
+            let mut warped = landmarks(0.0, yaw_deg.to_radians(), 0.0);
+            for p in warped.iter_mut() {
+                p[2] *= 1.7;
+            }
+            let w = head_pose(&warped);
+            assert!(
+                (clean.pitch - w.pitch).abs() < 1e-3,
+                "z warp moved pitch at yaw {yaw_deg}°: {} vs {}",
+                clean.pitch,
+                w.pitch
+            );
+        }
     }
 
     /// FaceMesh z is the model's least stable output (it drifts with crop
