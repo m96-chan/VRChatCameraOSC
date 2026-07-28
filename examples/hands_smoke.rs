@@ -16,11 +16,16 @@ use candle_onnx::onnx::ModelProto;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let palm = args.next().context("usage: hands_smoke <palm.onnx> <landmarks.onnx>")?;
-    let lms = args.next().context("usage: hands_smoke <palm.onnx> <landmarks.onnx>")?;
+    let palm = args
+        .next()
+        .context("usage: hands_smoke <palm.onnx> <landmarks.onnx>")?;
+    let lms = args
+        .next()
+        .context("usage: hands_smoke <palm.onnx> <landmarks.onnx>")?;
 
     smoke("palm_detection", &palm, (1, 192, 192, 3))?;
     smoke("hand_landmarks", &lms, (1, 224, 224, 3))?;
+    burn_bench(&lms)?;
     Ok(())
 }
 
@@ -33,12 +38,22 @@ fn smoke(label: &str, path: &str, dims: (usize, usize, usize, usize)) -> Result<
         .collect::<candle_core::Result<HashMap<_, _>>>()?;
     let graph = model.graph.as_ref().context("no graph")?;
     let input = graph.input.first().context("no input")?;
+    {
+        let mut ops: Vec<&str> = graph.node.iter().map(|n| n.op_type.as_str()).collect();
+        ops.sort();
+        ops.dedup();
+        eprintln!("{label}: op types: {ops:?}");
+    }
     eprintln!(
         "{label}: input '{}', {} nodes, {} outputs: {:?}",
         input.name,
         graph.node.len(),
         graph.output.len(),
-        graph.output.iter().map(|o| o.name.clone()).collect::<Vec<_>>()
+        graph
+            .output
+            .iter()
+            .map(|o| o.name.clone())
+            .collect::<Vec<_>>()
     );
 
     // Try NHWC first (MediaPipe convention), fall back to NCHW on shape errors.
@@ -74,4 +89,30 @@ fn smoke(label: &str, path: &str, dims: (usize, usize, usize, usize)) -> Result<
         }
     }
     anyhow::bail!("{label}: neither layout evaluated")
+}
+
+#[cfg(feature = "mesh-gpu")]
+fn burn_bench(path: &str) -> Result<()> {
+    use vrchat_camera_osc::tracking::burn_onnx::BurnOnnx;
+    let exec = BurnOnnx::from_path(path)?;
+    let n = 224 * 224 * 3;
+    let input: Vec<f32> = (0..n).map(|i| (i % 255) as f32 / 255.0).collect();
+    // Warmup (shader compile / first upload), then timed runs.
+    let _ = exec.run(input.clone(), [1, 224, 224, 3])?;
+    let t0 = Instant::now();
+    const RUNS: u32 = 20;
+    for _ in 0..RUNS {
+        let _ = exec.run(input.clone(), [1, 224, 224, 3])?;
+    }
+    eprintln!(
+        "hand_landmarks on burn-wgpu: {:.1} ms/eval (avg of {RUNS})",
+        t0.elapsed().as_secs_f64() * 1000.0 / RUNS as f64
+    );
+    Ok(())
+}
+
+#[cfg(not(feature = "mesh-gpu"))]
+fn burn_bench(_path: &str) -> Result<()> {
+    eprintln!("mesh-gpu feature off — burn bench skipped");
+    Ok(())
 }

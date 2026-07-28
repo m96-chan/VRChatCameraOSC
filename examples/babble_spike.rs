@@ -33,7 +33,9 @@ const IDX_TONGUE_RIGHT: usize = 37;
 
 fn main() -> Result<()> {
     let mut args = std::env::args().skip(1);
-    let model_path = args.next().context("usage: babble_spike <model.onnx> [frames]")?;
+    let model_path = args
+        .next()
+        .context("usage: babble_spike <model.onnx> [frames]")?;
     let frames: u32 = args.next().and_then(|v| v.parse().ok()).unwrap_or(300);
 
     let model = candle_onnx::read_file(&model_path)?;
@@ -127,13 +129,7 @@ fn main() -> Result<()> {
 
 /// Square crop around `center` with half-size `half`, converted to grayscale
 /// and bilinearly resized to 224×224, values in `0..1`.
-fn gray_crop_224(
-    rgb: &[u8],
-    w: u32,
-    h: u32,
-    center: [f32; 2],
-    half: f32,
-) -> Result<Vec<f32>> {
+fn gray_crop_224(rgb: &[u8], w: u32, h: u32, center: [f32; 2], half: f32) -> Result<Vec<f32>> {
     let (w, h) = (w as f32, h as f32);
     let side = half * 2.0;
     let x0 = center[0] - half;

@@ -9,4 +9,6 @@
 //! without churn (CLAUDE.md "models are pluggable").
 
 pub mod arkit;
+#[cfg(feature = "mesh-gpu")]
+pub mod burn_onnx;
 pub mod mediapipe;
