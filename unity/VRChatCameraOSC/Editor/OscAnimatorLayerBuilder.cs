@@ -460,14 +460,26 @@ namespace VRChatCameraOsc.AvatarSetup
             AnimationUtility.SetEditorCurve(clip, binding, AnimationCurve.Constant(0f, 0f, weight));
         }
 
+        /// <summary>Seconds of flat curve per muscle clip. The value is
+        /// constant, but the clip must have REAL length: the head layer's
+        /// ping-pong transitions fire on exit time, and a zero-length clip
+        /// (single t=0 key) never advances normalized time — live-confirmed
+        /// as "jump freezes the head and it never recovers" (the tracking
+        /// re-assert transition simply never fired, issue #25). With 1s
+        /// clips, Head = Animation is re-asserted every second.</summary>
+        const float MuscleClipSeconds = 1f;
+
         static AnimationClip MuscleClip(AnimatorController controller, string paramName, string muscleName, float value)
         {
-            // Plain constant curve: the head layer blends with Override (see
-            // AddHeadPoseLayer — the additive-blending + t=0-ramp variant is
-            // retired, it produced zero motion in the VRChat client).
+            // Flat (constant-value) curve with real duration; Override
+            // blending (see AddHeadPoseLayer — the additive + t=0-ramp
+            // variant is retired, it produced zero motion in the client).
             var clip = new AnimationClip { name = $"{LayerNameFor(paramName)}_{value:0.##}" };
             var binding = EditorCurveBinding.FloatCurve(string.Empty, typeof(Animator), muscleName);
-            AnimationUtility.SetEditorCurve(clip, binding, AnimationCurve.Constant(0f, 0f, value));
+            var curve = new AnimationCurve(
+                new Keyframe(0f, value),
+                new Keyframe(MuscleClipSeconds, value));
+            AnimationUtility.SetEditorCurve(clip, binding, curve);
             AssetDatabase.AddObjectToAsset(clip, controller);
             return clip;
         }

@@ -194,6 +194,16 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             Assert.IsNotNull(loopState.motion);
             Assert.AreEqual(1, loopState.behaviours.OfType<VRCAnimatorTrackingControl>().Count());
 
+            // Muscle clips need REAL length or normalized time never
+            // advances and the exit-time ping-pong never fires
+            // (live-confirmed: jump froze the head permanently, issue #25).
+            var headTree = (BlendTree)layer.stateMachine.defaultState.motion;
+            foreach (var child in headTree.children)
+            {
+                Assert.Greater(((AnimationClip)child.motion).length, 0.5f,
+                    $"{child.motion.name} must have real duration");
+            }
+
             // Guard against useAutomaticThresholds rewriting the -1/0/1
             // spread (same failure mode the eyelid tree hit — issue #21).
             var tree = (BlendTree)layer.stateMachine.states
