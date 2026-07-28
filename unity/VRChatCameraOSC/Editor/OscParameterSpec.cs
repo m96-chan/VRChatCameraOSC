@@ -96,18 +96,23 @@ namespace VRChatCameraOsc.AvatarSetup
             // they cost expression-parameter bits only on avatars that have
             // the shapes. All are ARKit-52-drivable and already emitted by
             // the tracker (src/mapping/unified.rs). ----
-            new OscParamSpec("v2/CheekPuffLeft", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
-            new OscParamSpec("v2/CheekPuffRight", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
-            new OscParamSpec("v2/JawLeft", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
-            new OscParamSpec("v2/JawRight", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
+            // FullScale < 1 on the channels a webcam demonstrably
+            // under-drives (brows measured 0.3–0.5 peak, issue #23; cheek
+            // puff reported invisible live, issue #24) — provisional values
+            // by analogy, tune against captures as reports come in. Pucker
+            // and funnel are strong ARKit channels; they keep full range.
+            new OscParamSpec("v2/CheekPuffLeft", 0f, 1f, 0f, OscParamKind.BlendShape, fullScale: 0.4f, optional: true),
+            new OscParamSpec("v2/CheekPuffRight", 0f, 1f, 0f, OscParamKind.BlendShape, fullScale: 0.4f, optional: true),
+            new OscParamSpec("v2/JawLeft", 0f, 1f, 0f, OscParamKind.BlendShape, fullScale: 0.5f, optional: true),
+            new OscParamSpec("v2/JawRight", 0f, 1f, 0f, OscParamKind.BlendShape, fullScale: 0.5f, optional: true),
             new OscParamSpec("v2/LipPuckerUpperLeft", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
             new OscParamSpec("v2/LipPuckerUpperRight", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
             new OscParamSpec("v2/LipFunnelUpperLeft", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
             new OscParamSpec("v2/LipFunnelUpperRight", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
-            new OscParamSpec("v2/MouthFrownLeft", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
-            new OscParamSpec("v2/MouthFrownRight", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
-            new OscParamSpec("v2/NoseSneerLeft", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
-            new OscParamSpec("v2/NoseSneerRight", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
+            new OscParamSpec("v2/MouthFrownLeft", 0f, 1f, 0f, OscParamKind.BlendShape, fullScale: 0.5f, optional: true),
+            new OscParamSpec("v2/MouthFrownRight", 0f, 1f, 0f, OscParamKind.BlendShape, fullScale: 0.5f, optional: true),
+            new OscParamSpec("v2/NoseSneerLeft", 0f, 1f, 0f, OscParamKind.BlendShape, fullScale: 0.5f, optional: true),
+            new OscParamSpec("v2/NoseSneerRight", 0f, 1f, 0f, OscParamKind.BlendShape, fullScale: 0.5f, optional: true),
         };
 
         /// <summary>The always-declared subset (`Optional == false`).</summary>

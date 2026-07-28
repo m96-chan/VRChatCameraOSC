@@ -89,12 +89,27 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         }
 
         [Test]
-        public void Spec_BrowUpParamsCarryHalfFullScale_OthersFullRange()
+        public void Spec_WeakChannelsCarryReducedFullScale_OthersFullRange()
         {
+            // Webcam-measured/reported weak channels rescale avatar-side
+            // (issues #23/#24); everything else keeps full range.
+            var expected = new System.Collections.Generic.Dictionary<string, float>
+            {
+                ["v2/BrowUpLeft"] = 0.5f,
+                ["v2/BrowUpRight"] = 0.5f,
+                ["v2/CheekPuffLeft"] = 0.4f,
+                ["v2/CheekPuffRight"] = 0.4f,
+                ["v2/JawLeft"] = 0.5f,
+                ["v2/JawRight"] = 0.5f,
+                ["v2/MouthFrownLeft"] = 0.5f,
+                ["v2/MouthFrownRight"] = 0.5f,
+                ["v2/NoseSneerLeft"] = 0.5f,
+                ["v2/NoseSneerRight"] = 0.5f,
+            };
             foreach (var spec in OscParameterSpec.All)
             {
-                var expected = spec.Name.StartsWith("v2/BrowUp") ? 0.5f : spec.Max;
-                Assert.AreEqual(expected, spec.FullScale, 1e-6f, spec.Name);
+                var want = expected.TryGetValue(spec.Name, out var v) ? v : spec.Max;
+                Assert.AreEqual(want, spec.FullScale, 1e-6f, spec.Name);
             }
         }
 
@@ -146,12 +161,16 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         }
 
         [Test]
-        public void AddHeadPoseLayer_UsesAdditiveBlending_WithExplicitThresholds()
+        public void AddHeadPoseLayer_UsesOverrideBlending_WithExplicitThresholds()
         {
+            // Override + constant clips (issue #25 third attempt): the
+            // additive + t=0-ramp variant produced zero head motion in the
+            // VRChat client; emotes prove plain muscle clips + tracking
+            // control do work.
             OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
 
             var layer = _controller.layers.First(l => l.name == "OSC_v2_Head_Roll");
-            Assert.AreEqual(AnimatorLayerBlendingMode.Additive, layer.blendingMode);
+            Assert.AreEqual(AnimatorLayerBlendingMode.Override, layer.blendingMode);
             Assert.IsTrue(_controller.parameters.Any(p => p.name == "v2/Head/Roll"));
 
             // Guard against useAutomaticThresholds rewriting the -1/0/1

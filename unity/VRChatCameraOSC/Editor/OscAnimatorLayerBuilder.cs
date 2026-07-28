@@ -129,7 +129,18 @@ namespace VRChatCameraOsc.AvatarSetup
             tree.AddChild(MuscleClip(controller, paramName, muscleName, -1f), -1f);
             tree.AddChild(MuscleClip(controller, paramName, muscleName, 0f), 0f);
             tree.AddChild(MuscleClip(controller, paramName, muscleName, 1f), 1f);
-            AddLayer(controller, paramName, tree, AnimatorLayerBlendingMode.Additive, GetOrCreateHeadOnlyMask(controller), AddHeadTrackingControlBehaviour);
+            // Override, not Additive (issue #25 third attempt): additive
+            // animator layers derive each clip's reference pose from its t=0
+            // sample, which we compensated with a 1/60s 0→value ramp — that
+            // trick verifies in the editor but produced zero head motion in
+            // the VRChat client on both the Gesture and Additive playable
+            // layers, consistent with the client pinning state time at 0
+            // (ramp@t0 = 0 ⇒ additive delta identically 0). Emotes prove the
+            // client DOES honor plain muscle clips + TrackingControl on a
+            // head that Animation-releases from IK, so use plain Override
+            // blending with constant clips; the head-only AvatarMask keeps
+            // this layer from touching anything else.
+            AddLayer(controller, paramName, tree, AnimatorLayerBlendingMode.Override, GetOrCreateHeadOnlyMask(controller), AddHeadTrackingControlBehaviour);
         }
 
         /// <summary>
@@ -397,22 +408,14 @@ namespace VRChatCameraOsc.AvatarSetup
             AnimationUtility.SetEditorCurve(clip, binding, AnimationCurve.Constant(0f, 0f, weight));
         }
 
-        // Additive layers subtract each clip's own value at time 0 as its
-        // implicit reference pose before adding the rest on top. A flat
-        // AnimationCurve.Constant clip has the same value at time 0 as
-        // everywhere else, so that delta — and the entire additive layer's
-        // contribution — is always zero, regardless of AvatarMask. Ramping
-        // from 0 at t=0 up to the target value makes the reference pose 0
-        // (matching the other two children of the blend tree, which also
-        // start at 0) so the additive delta correctly reflects the blended
-        // muscle value once the ramp finishes, one frame later.
-        const float AdditiveReferenceRampSeconds = 1f / 60f;
-
         static AnimationClip MuscleClip(AnimatorController controller, string paramName, string muscleName, float value)
         {
+            // Plain constant curve: the head layer blends with Override (see
+            // AddHeadPoseLayer — the additive-blending + t=0-ramp variant is
+            // retired, it produced zero motion in the VRChat client).
             var clip = new AnimationClip { name = $"{LayerNameFor(paramName)}_{value:0.##}" };
             var binding = EditorCurveBinding.FloatCurve(string.Empty, typeof(Animator), muscleName);
-            AnimationUtility.SetEditorCurve(clip, binding, AnimationCurve.Linear(0f, 0f, AdditiveReferenceRampSeconds, value));
+            AnimationUtility.SetEditorCurve(clip, binding, AnimationCurve.Constant(0f, 0f, value));
             AssetDatabase.AddObjectToAsset(clip, controller);
             return clip;
         }
