@@ -42,7 +42,7 @@ mirroring `src/mapping/unified.rs`):
 | `v2/JawOpen` | `0..1` | 0 | mouth-open shape |
 | `v2/MouthSmileLeft` / `v2/MouthSmileRight` | `0..1` | 0 | smile shape (shared shape OK) |
 | `v2/MouthStretchLeft` / `v2/MouthStretchRight` | `0..1` | 0 | mouth-widen shape (shared shape OK) |
-| `v2/Head/Yaw` / `v2/Head/Pitch` / `v2/Head/Roll` | `-1..1` | 0 | Humanoid head muscles (**Additive playable layer** — issue #25) |
+| `v2/Head/Yaw` / `v2/Head/Pitch` / `v2/Head/Roll` | `-1..1` | 0 | Humanoid head muscles — **one combined Gesture-layer blend tree** (issues #25/#27) |
 
 Plus **optional extras** (issue #24) — declared (and costing expression
 parameter bits) **only when you wire a blend shape** to them:

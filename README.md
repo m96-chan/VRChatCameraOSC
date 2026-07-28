@@ -256,7 +256,7 @@ Expression Parameters and the FX/Gesture Animator Controller layers for you:
 | `v2/JawOpen` | `0..1` | mouth opening amount |
 | `v2/MouthSmileLeft`, `v2/MouthSmileRight` | `0..1` | mouth-corner lift (smile) |
 | `v2/MouthStretchLeft`, `v2/MouthStretchRight` | `0..1` | mouth-corner horizontal stretch (wide/grin) |
-| `v2/Head/Yaw`, `v2/Head/Pitch`, `v2/Head/Roll` | `-1..1` | head turn / nod / tilt (Humanoid head bone, Additive playable layer) |
+| `v2/Head/Yaw`, `v2/Head/Pitch`, `v2/Head/Roll` | `-1..1` | head turn / nod / tilt (Humanoid head bone — one combined Gesture-layer blend tree, issues #25/#27) |
 
 Plus optional extras declared only when wired (issue #24): cheek puff,
 sideways jaw, pucker, funnel, frown, nose sneer, and an eye-wide shape on
