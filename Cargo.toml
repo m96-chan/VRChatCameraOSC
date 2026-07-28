@@ -75,3 +75,4 @@ approx = "0.5"
 
 [profile.release]
 lto = "thin"
+

@@ -516,7 +516,7 @@ dependencies = [
 [[package]]
 name = "candle-core"
 version = "0.10.2"
-source = "git+https://github.com/m96-chan/candle?branch=avatacam#7b0427dde64a98cd280f7d26f3c274da48a1a340"
+source = "git+https://github.com/m96-chan/candle?branch=avatacam#dd1633e9ad707c6dab0bb25f0495a0711c48eb86"
 dependencies = [
  "byteorder",
  "float8 0.7.0",
@@ -541,7 +541,7 @@ dependencies = [
 [[package]]
 name = "candle-nn"
 version = "0.10.2"
-source = "git+https://github.com/m96-chan/candle?branch=avatacam#7b0427dde64a98cd280f7d26f3c274da48a1a340"
+source = "git+https://github.com/m96-chan/candle?branch=avatacam#dd1633e9ad707c6dab0bb25f0495a0711c48eb86"
 dependencies = [
  "candle-core",
  "half",
@@ -556,7 +556,7 @@ dependencies = [
 [[package]]
 name = "candle-onnx"
 version = "0.10.2"
-source = "git+https://github.com/m96-chan/candle?branch=avatacam#7b0427dde64a98cd280f7d26f3c274da48a1a340"
+source = "git+https://github.com/m96-chan/candle?branch=avatacam#dd1633e9ad707c6dab0bb25f0495a0711c48eb86"
 dependencies = [
  "candle-core",
  "candle-nn",
