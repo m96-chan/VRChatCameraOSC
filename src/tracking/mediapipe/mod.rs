@@ -173,9 +173,16 @@ pub fn head_pose(points: &[[f32; 3]]) -> HeadPose {
     // and the tanh ceiling stays symmetric (per-user residual is absorbed
     // by the downstream neutral calibration, like every other channel).
     // With this, the whole head estimator is z-free.
+    // The drop compensation and the normalization must be in TRUE
+    // inter-ocular units: the in-image eye distance foreshortens by
+    // cos(yaw), so using `r_plane` directly under-compensates at large
+    // turns and reads as pitch ("looking hard left pitches up" — follow-up
+    // 2). The already-computed yaw estimate un-foreshortens it; clamp the
+    // cosine away from 0 so a saturated profile view degrades gracefully.
+    let iod_true = r_plane / yaw.cos().max(0.35);
     let up_dir = [-eye_dir[1], eye_dir[0]];
-    let y_off = off[0] * up_dir[0] + off[1] * up_dir[1] + NOSE_DROP_RATIO * r_plane;
-    let mut pitch = (y_off / (r_plane * NOSE_DEPTH_RATIO)).atan();
+    let y_off = off[0] * up_dir[0] + off[1] * up_dir[1] + NOSE_DROP_RATIO * iod_true;
+    let mut pitch = (y_off / (iod_true * NOSE_DEPTH_RATIO)).atan();
 
     yaw *= HEAD_YAW_GAIN;
     pitch *= HEAD_PITCH_GAIN;
@@ -489,6 +496,23 @@ mod head_pose_tests {
     /// looking straight left/right pushed the avatar's head up-left /
     /// up-right symmetrically) — the whole head estimator must be z-free.
     /// Scaling z arbitrarily while yawing must leave pitch unchanged.
+    /// Large pure yaw must not read as pitch (issue #27 follow-up 2:
+    /// "looking hard left pitches the head up, small turns are fine") —
+    /// the anatomical-drop compensation must be expressed in TRUE
+    /// inter-ocular units (the in-image eye distance forshortens by
+    /// cos(yaw), so compensating against it leaks at large angles).
+    #[test]
+    fn large_pure_yaw_reads_zero_pitch() {
+        for yaw_deg in [-45.0f32, -30.0, 30.0, 45.0] {
+            let hp = head_pose(&landmarks(0.0, yaw_deg.to_radians(), 0.0));
+            assert!(
+                hp.pitch.abs() < 2f32.to_radians(),
+                "pitch leaked {:.1}° at yaw {yaw_deg}°",
+                hp.pitch.to_degrees()
+            );
+        }
+    }
+
     #[test]
     fn pitch_immune_to_z_warp_under_yaw() {
         for yaw_deg in [-30.0f32, 30.0] {
