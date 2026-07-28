@@ -104,14 +104,20 @@ namespace VRChatCameraOsc.AvatarSetup
         /// Animator parameters are the three <c>v2/Head/*</c> floats.</summary>
         public const string CombinedHeadKey = "v2/Head";
 
-        /// <summary>Humanoid muscle per head axis, in nesting order
-        /// (yaw outermost). Names verified against
-        /// <see cref="HumanTrait.MuscleName"/> (MuscleNameValidityTests).</summary>
-        static readonly (string param, string muscle)[] HeadAxes =
+        /// <summary>Humanoid muscle per head axis, in nesting order (yaw
+        /// outermost); names verified against
+        /// <see cref="HumanTrait.MuscleName"/> (MuscleNameValidityTests).
+        /// <c>sign</c> maps the parameter's VRCFT convention onto
+        /// the muscle's: <c>v2/Head/Yaw</c> is +1 = turn toward the
+        /// subject's LEFT (HeadPose/VRCFT), but the "Head Turn Left-Right"
+        /// muscle is +1 = right — live-confirmed inverted (いやいや mirrored,
+        /// issue #27 follow-up). Pitch (+1 = up = muscle up) and roll (sign
+        /// already flipped tracker-side) verified correct live.</summary>
+        static readonly (string param, string muscle, float sign)[] HeadAxes =
         {
-            ("v2/Head/Yaw", "Head Turn Left-Right"),
-            ("v2/Head/Pitch", "Head Nod Down-Up"),
-            ("v2/Head/Roll", "Head Tilt Left-Right"),
+            ("v2/Head/Yaw", "Head Turn Left-Right", -1f),
+            ("v2/Head/Pitch", "Head Nod Down-Up", 1f),
+            ("v2/Head/Roll", "Head Tilt Left-Right", 1f),
         };
 
         /// <summary>
@@ -141,7 +147,7 @@ namespace VRChatCameraOsc.AvatarSetup
         /// </summary>
         public static void AddCombinedHeadLayer(AnimatorController controller)
         {
-            foreach (var (param, _) in HeadAxes)
+            foreach (var (param, _, _) in HeadAxes)
             {
                 EnsureFloatParameter(controller, param);
             }
@@ -201,10 +207,11 @@ namespace VRChatCameraOsc.AvatarSetup
             var values = new[] { yaw, pitch, roll };
             for (var i = 0; i < HeadAxes.Length; i++)
             {
+                var v = values[i] * HeadAxes[i].sign;
                 var binding = EditorCurveBinding.FloatCurve(string.Empty, typeof(Animator), HeadAxes[i].muscle);
                 var curve = new AnimationCurve(
-                    new Keyframe(0f, values[i]),
-                    new Keyframe(MuscleClipSeconds, values[i]));
+                    new Keyframe(0f, v),
+                    new Keyframe(MuscleClipSeconds, v));
                 AnimationUtility.SetEditorCurve(clip, binding, curve);
             }
             AssetDatabase.AddObjectToAsset(clip, controller);

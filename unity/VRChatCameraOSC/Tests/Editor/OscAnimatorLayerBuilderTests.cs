@@ -192,10 +192,12 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             CollectionAssert.AreEquivalent(
                 new[] { "Head Turn Left-Right", "Head Nod Down-Up", "Head Tilt Left-Right" }, muscles);
             Assert.Greater(clip.length, 0.5f);
-            // Leaf values encode the branch: y=+1, p=-1, r=0 for this path.
+            // Leaf values encode the branch (y=+1, p=-1, r=0), with the
+            // yaw sign flipped: param +1 = subject's LEFT (VRCFT), muscle
+            // +1 = right — live-confirmed mirrored without the flip.
             float ValueOf(string muscle) => AnimationUtility.GetEditorCurve(
                 clip, AnimationUtility.GetCurveBindings(clip).Single(b => b.propertyName == muscle)).Evaluate(0f);
-            Assert.AreEqual(1f, ValueOf("Head Turn Left-Right"), 1e-6f);
+            Assert.AreEqual(-1f, ValueOf("Head Turn Left-Right"), 1e-6f);
             Assert.AreEqual(-1f, ValueOf("Head Nod Down-Up"), 1e-6f);
             Assert.AreEqual(0f, ValueOf("Head Tilt Left-Right"), 1e-6f);
         }
