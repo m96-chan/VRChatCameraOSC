@@ -90,6 +90,13 @@ const HEAD_MAX_DEG: f32 = 60.0;
 const HEAD_YAW_GAIN: f32 = 1.0;
 const HEAD_PITCH_GAIN: f32 = 1.0;
 
+/// Nose-tip forward protrusion as a fraction of the inter-ocular distance
+/// (canonical-face geometry) — the scale constant of the 2D yaw cue (issue
+/// #27). Per-user deviation from it is a pure gain error: the direction and
+/// zero point stay exact, and neutral calibration + the head range configs
+/// absorb the rest.
+const NOSE_DEPTH_RATIO: f32 = 0.58;
+
 /// World-space landmark (x right/subject-left, y up, z toward viewer) from a
 /// normalized-image-space FaceMesh point (x right, y down, z more-negative
 /// = closer to camera).
@@ -121,7 +128,9 @@ fn rotate_y(theta: f32, v: [f32; 3]) -> [f32; 3] {
 /// constants), so noise in one axis's cue can't leak into the others:
 ///
 /// - **roll** — the eye line's in-image angle (pure 2D);
-/// - **yaw** — the eyes' depth difference;
+/// - **yaw** — the nose tip's in-plane offset from the eye midpoint (pure
+///   2D, issue #27 — replaced the original eyes'-z-difference cue, whose
+///   FaceMesh depth drifted with subject distance);
 /// - **pitch** — the chin-to-forehead tilt out of the image plane, de-rotated
 ///   by the measured roll/yaw first so the reading stays a pure vertical tilt
 ///   even when the neck itself is pitched (a "leaned-back, then turn
@@ -146,8 +155,22 @@ pub fn head_pose(points: &[[f32; 3]]) -> HeadPose {
 
     // Roll: the eye line's tilt in the image plane (2D only).
     let roll = right[1].atan2(right[0]);
-    // Yaw: how far the eye line tips out of the image plane.
-    let mut yaw = (-right[2]).atan2(r_plane);
+
+    // Yaw (issue #27): a pure-2D cue — the nose tip's in-plane offset from
+    // the eye midpoint, projected onto the (roll-carrying) eye line and
+    // normalized by the in-image eye distance. Geometry: with the tip
+    // protruding NOSE_DEPTH_RATIO×IOD in front of the eye line, a yaw of θ
+    // projects it sideways by d·sinθ while the eye distance foreshortens to
+    // IOD·cosθ — so atan recovers θ exactly, independent of scale and roll.
+    // The previous cue read the eye landmarks' FaceMesh **z** difference,
+    // the model's least stable output: it drifts with subject distance /
+    // crop, observed live as a session-dependent ~30° yaw bias surviving
+    // neutral calibration (deliberate divergence from AvataCam #225 here).
+    let nose = a(1);
+    let mid = [(a(33)[0] + a(263)[0]) * 0.5, (a(33)[1] + a(263)[1]) * 0.5];
+    let x_off =
+        (nose[0] - mid[0]) * (right[0] / r_plane) + (nose[1] - mid[1]) * (right[1] / r_plane);
+    let mut yaw = (x_off / (r_plane * NOSE_DEPTH_RATIO)).atan();
 
     // Pitch must be the de-rotated (ZYX-consistent) third angle, not the raw
     // chin->forehead tilt (#234): de-rotating the vertical vector by the
@@ -401,12 +424,13 @@ mod head_pose_tests {
     /// right/subject-left, y up, z toward viewer), realistic proportions in
     /// eye-half-width units. Only the landmarks `head_pose` reads are
     /// populated (mirrors AvataCam's `head_pose_tests::canonical`).
-    fn canonical() -> [(usize, [f32; 3]); 4] {
+    fn canonical() -> [(usize, [f32; 3]); 5] {
         [
             (33, [-0.06, 0.0, 0.0]),   // right-eye outer
             (263, [0.06, 0.0, 0.0]),   // left-eye outer
             (10, [0.0, 0.09, -0.01]),  // forehead top
             (152, [0.0, -0.13, 0.02]), // chin
+            (1, [0.0, -0.04, 0.07]), // nose tip (protrudes toward viewer; 0.07/0.12 ≈ NOSE_DEPTH_RATIO)
         ]
     }
 
@@ -447,6 +471,31 @@ mod head_pose_tests {
     /// subtracted before comparing against an expected sign/magnitude.
     fn neutral_pitch_bias() -> f32 {
         head_pose(&landmarks(0.0, 0.0, 0.0)).pitch
+    }
+
+    /// FaceMesh z is the model's least stable output (it drifts with crop
+    /// size / subject distance) — the yaw cue must not read it (issue #27):
+    /// a uniform z-scale drift, simulating the subject settling at a
+    /// different distance than they calibrated at, must leave yaw unchanged.
+    /// The retired z-depth yaw estimator failed exactly this, showing up
+    /// live as a session-dependent ~30° yaw bias that survived neutral
+    /// calibration ("can't turn left/right" while roll worked).
+    #[test]
+    fn yaw_immune_to_z_scale_drift() {
+        for yaw_deg in [-25.0f32, 0.0, 25.0] {
+            let clean = head_pose(&landmarks(0.0, yaw_deg.to_radians(), 0.0));
+            let mut drifted = landmarks(0.0, yaw_deg.to_radians(), 0.0);
+            for p in drifted.iter_mut() {
+                p[2] *= 1.5;
+            }
+            let d = head_pose(&drifted);
+            assert!(
+                (clean.yaw - d.yaw).abs() < 1e-3,
+                "z drift moved yaw at {yaw_deg}°: {} vs {}",
+                clean.yaw,
+                d.yaw
+            );
+        }
     }
 
     #[test]
