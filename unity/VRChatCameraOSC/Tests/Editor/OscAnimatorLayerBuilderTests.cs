@@ -68,6 +68,36 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         }
 
         [Test]
+        public void AddBlendShapeLayer_WithFullScale_ReachesWeight100AtThatThreshold()
+        {
+            // Issue #23: a deliberate brow raise only reaches ~0.3-0.5 on the
+            // wire (VRCFT-semantics values, measured live), so the brow trees
+            // rescale avatar-side: weight 100 at fullScale (0.5), clamped
+            // above it. Real FT avatars are unaffected — this is wizard-only.
+            OscAnimatorLayerBuilder.AddBlendShapeLayer(
+                _controller, _avatarRoot.transform, "v2/BrowUpLeft", _renderer, "Smile", 0.5f);
+
+            var layer = _controller.layers.First(l => l.name == "OSC_v2_BrowUpLeft");
+            var tree = (BlendTree)layer.stateMachine.states.Single().state.motion;
+            Assert.IsFalse(tree.useAutomaticThresholds);
+            Assert.AreEqual(2, tree.children.Length);
+            Assert.AreEqual(0f, tree.children[0].threshold, 1e-6f);
+            Assert.AreEqual(0.5f, tree.children[1].threshold, 1e-6f);
+            StringAssert.EndsWith("_0", tree.children[0].motion.name);
+            StringAssert.EndsWith("_100", tree.children[1].motion.name);
+        }
+
+        [Test]
+        public void Spec_BrowUpParamsCarryHalfFullScale_OthersFullRange()
+        {
+            foreach (var spec in OscParameterSpec.All)
+            {
+                var expected = spec.Name.StartsWith("v2/BrowUp") ? 0.5f : spec.Max;
+                Assert.AreEqual(expected, spec.FullScale, 1e-6f, spec.Name);
+            }
+        }
+
+        [Test]
         public void AddEyeLidLayer_AddsInvertedBlendTree_Closed100AtZero_Open0AtNeutral()
         {
             // VRCFT v2/EyeLid* semantics: 0 = closed, 0.75 = relaxed open.

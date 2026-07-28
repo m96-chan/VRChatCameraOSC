@@ -273,7 +273,8 @@ namespace VRChatCameraOsc.AvatarSetup
                         if (_positiveRenderer.TryGetValue(spec.Name, out var r) &&
                             _positiveBlendShape.TryGetValue(spec.Name, out var shape))
                         {
-                            OscAnimatorLayerBuilder.AddBlendShapeLayer(controller, _avatar.transform, spec.Name, r, shape);
+                            OscAnimatorLayerBuilder.AddBlendShapeLayer(
+                                controller, _avatar.transform, spec.Name, r, shape, spec.FullScale);
                         }
                         break;
                     case OscParamKind.EyeLid:

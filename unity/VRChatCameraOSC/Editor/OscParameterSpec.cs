@@ -34,14 +34,23 @@ namespace VRChatCameraOsc.AvatarSetup
         /// <summary>Declared VRC Expression Parameter default — the value the
         /// avatar rests at when no tracker is sending (eyes open, face neutral).</summary>
         public readonly float DefaultValue;
+        /// <summary>Parameter value at which the driven blend shape reaches
+        /// weight 100 (BlendShape kind only; values above it clamp at 100).
+        /// Defaults to <see cref="Max"/>. Below-Max values rescale
+        /// avatar-side for channels whose webcam-tracked VRCFT values never
+        /// approach 1.0 — measured live for the brows (issue #23: a
+        /// deliberate raise peaks at ~0.3–0.5 on the wire).</summary>
+        public readonly float FullScale;
         public readonly OscParamKind Kind;
 
-        public OscParamSpec(string name, float min, float max, float defaultValue, OscParamKind kind)
+        public OscParamSpec(
+            string name, float min, float max, float defaultValue, OscParamKind kind, float fullScale = 0f)
         {
             Name = name;
             Min = min;
             Max = max;
             DefaultValue = defaultValue;
+            FullScale = fullScale > 0f ? fullScale : max;
             Kind = kind;
         }
     }
@@ -67,8 +76,8 @@ namespace VRChatCameraOsc.AvatarSetup
         {
             new OscParamSpec("v2/EyeLidLeft", 0f, 1f, EyeLidNeutral, OscParamKind.EyeLid),
             new OscParamSpec("v2/EyeLidRight", 0f, 1f, EyeLidNeutral, OscParamKind.EyeLid),
-            new OscParamSpec("v2/BrowUpLeft", 0f, 1f, 0f, OscParamKind.BlendShape),
-            new OscParamSpec("v2/BrowUpRight", 0f, 1f, 0f, OscParamKind.BlendShape),
+            new OscParamSpec("v2/BrowUpLeft", 0f, 1f, 0f, OscParamKind.BlendShape, fullScale: 0.5f),
+            new OscParamSpec("v2/BrowUpRight", 0f, 1f, 0f, OscParamKind.BlendShape, fullScale: 0.5f),
             new OscParamSpec("v2/JawOpen", 0f, 1f, 0f, OscParamKind.BlendShape),
             new OscParamSpec("v2/MouthSmileLeft", 0f, 1f, 0f, OscParamKind.BlendShape),
             new OscParamSpec("v2/MouthSmileRight", 0f, 1f, 0f, OscParamKind.BlendShape),

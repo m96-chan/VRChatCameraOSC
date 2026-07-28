@@ -38,7 +38,7 @@ mirroring `src/mapping/unified.rs`):
 | Parameter | Range | Default | Drives |
 |---|---|---|---|
 | `v2/EyeLidLeft` / `v2/EyeLidRight` | `0..1` | **0.75** | blink shape, **inverted** (0 = closed, 0.75 = relaxed open, 1 = wide) |
-| `v2/BrowUpLeft` / `v2/BrowUpRight` | `0..1` | 0 | brow-raise shape |
+| `v2/BrowUpLeft` / `v2/BrowUpRight` | `0..1` | 0 | brow-raise shape, **full weight at 0.5** (webcam-tracked raises peak ~0.3–0.5 on the wire — issue #23; values above 0.5 clamp) |
 | `v2/JawOpen` | `0..1` | 0 | mouth-open shape |
 | `v2/MouthSmileLeft` / `v2/MouthSmileRight` | `0..1` | 0 | smile shape (shared shape OK) |
 | `v2/MouthStretchLeft` / `v2/MouthStretchRight` | `0..1` | 0 | mouth-widen shape (shared shape OK) |

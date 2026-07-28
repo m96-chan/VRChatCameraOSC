@@ -31,17 +31,22 @@ namespace VRChatCameraOsc.AvatarSetup
         /// <summary><c>OSC_*</c> layer/asset name for a parameter, slash-safe.</summary>
         static string LayerNameFor(string paramName) => "OSC_" + paramName.Replace('/', '_');
 
-        /// <summary>0..1 parameter driving a single blend shape from 0 to 100.</summary>
+        /// <summary>0..1 parameter driving a single blend shape from 0 to 100.
+        /// <paramref name="fullScale"/> is the parameter value at which the
+        /// shape reaches weight 100 (Simple1D clamps above the last child, so
+        /// higher values stay at 100) — below-1 values rescale avatar-side
+        /// for channels whose tracked values never approach 1.0 (issue #23).</summary>
         public static void AddBlendShapeLayer(
             AnimatorController controller,
             Transform avatarRoot,
             string paramName,
             SkinnedMeshRenderer renderer,
-            string blendShapeName)
+            string blendShapeName,
+            float fullScale = 1f)
         {
             var tree = NewTree(controller, paramName, BlendTreeType.Simple1D);
             tree.AddChild(BlendShapeClip(controller, avatarRoot, renderer, blendShapeName, 0f), 0f);
-            tree.AddChild(BlendShapeClip(controller, avatarRoot, renderer, blendShapeName, BlendShapeFullWeight), 1f);
+            tree.AddChild(BlendShapeClip(controller, avatarRoot, renderer, blendShapeName, BlendShapeFullWeight), fullScale);
             AddLayer(controller, paramName, tree, AnimatorLayerBlendingMode.Override, null);
         }
 
