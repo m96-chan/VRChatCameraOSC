@@ -173,15 +173,26 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             Assert.AreEqual(AnimatorLayerBlendingMode.Override, layer.blendingMode);
             Assert.IsTrue(_controller.parameters.Any(p => p.name == "v2/Head/Roll"));
 
-            // Buffered entry (issue #25 fifth attempt): an empty Init default
-            // state transitions instantly into the motion state so the
-            // tracking control's OnStateEnter reliably fires in the client.
+            // Ping-pong loop (issue #25 attempts 5-6): both states carry the
+            // motion and the tracking control, cycling on exit time so
+            // Head = Animation is re-asserted continuously — the client
+            // misses behaviours on the initial state at load AND resets
+            // tracking after its own events (jump/landing), both live-confirmed.
             Assert.AreEqual(2, layer.stateMachine.states.Length);
-            Assert.AreEqual("OSC_v2_Head_Roll_Init", layer.stateMachine.defaultState.name);
-            var initTransition = layer.stateMachine.defaultState.transitions.Single();
-            Assert.IsTrue(initTransition.hasExitTime);
-            Assert.AreEqual(0f, initTransition.exitTime, 1e-6f);
-            Assert.AreEqual("OSC_v2_Head_Roll", initTransition.destinationState.name);
+            Assert.AreEqual("OSC_v2_Head_Roll", layer.stateMachine.defaultState.name);
+            var forward = layer.stateMachine.states
+                .Single(s => s.state.name == "OSC_v2_Head_Roll").state.transitions.Single();
+            Assert.IsTrue(forward.hasExitTime);
+            Assert.AreEqual("OSC_v2_Head_Roll_Loop", forward.destinationState.name);
+            var back = layer.stateMachine.states
+                .Single(s => s.state.name == "OSC_v2_Head_Roll_Loop").state.transitions.Single();
+            Assert.AreEqual("OSC_v2_Head_Roll", back.destinationState.name);
+            // The loop twin must drive the same motion and carry the same
+            // behaviour, or half of each cycle would freeze the head.
+            var loopState = layer.stateMachine.states
+                .Single(s => s.state.name == "OSC_v2_Head_Roll_Loop").state;
+            Assert.IsNotNull(loopState.motion);
+            Assert.AreEqual(1, loopState.behaviours.OfType<VRCAnimatorTrackingControl>().Count());
 
             // Guard against useAutomaticThresholds rewriting the -1/0/1
             // spread (same failure mode the eyelid tree hit — issue #21).

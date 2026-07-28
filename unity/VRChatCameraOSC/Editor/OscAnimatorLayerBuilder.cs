@@ -141,13 +141,14 @@ namespace VRChatCameraOsc.AvatarSetup
             // blending with constant clips; the head-only AvatarMask keeps
             // this layer from touching anything else.
             //
-            // bufferEntryState (issue #25 fifth attempt): VRChat is known to
-            // miss State Behaviours on a layer's initial state at avatar
-            // load — if the VRCAnimatorTrackingControl never fires, Desktop
-            // head IK keeps the bone and the layer is inert regardless of
-            // construction. The classic workaround is an empty default state
-            // that immediately transitions into the real state, so
-            // OnStateEnter (and the tracking control) fires post-init.
+            // bufferEntryState (issue #25 attempts 5-6): VRChat misses State
+            // Behaviours on a layer's initial state at avatar load (confirmed
+            // live — the head only moved once the behaviour fired via a
+            // transition), and the client's own systems (jump/landing, emote
+            // exit) later reset tracking to Tracking, permanently freezing a
+            // fire-once design (also confirmed live). The state machine
+            // therefore ping-pongs between two identical states so the
+            // tracking control re-asserts Head = Animation continuously.
             AddLayer(controller, paramName, tree, AnimatorLayerBlendingMode.Override,
                 GetOrCreateHeadOnlyMask(controller), AddHeadTrackingControlBehaviour, bufferEntryState: true);
         }
@@ -374,22 +375,30 @@ namespace VRChatCameraOsc.AvatarSetup
             configureState?.Invoke(state);
             if (bufferEntryState)
             {
-                // Empty default state → instant exit-time transition into the
-                // real state, so its State Behaviours reliably fire in the
-                // VRChat client (behaviours on the initial state can be
-                // missed at avatar load — see AddHeadPoseLayer).
-                var init = stateMachine.AddState(layerName + "_Init");
-                init.writeDefaultValues = false;
-                var t = init.AddTransition(state);
-                t.hasExitTime = true;
-                t.exitTime = 0f;
-                t.duration = 0f;
-                stateMachine.defaultState = init;
+                // Two identical states ping-ponging on exit time, each
+                // carrying the motion AND the configured behaviours, so
+                // OnStateEnter re-fires continuously. This both dodges the
+                // missed-behaviour-on-initial-state load quirk (confirmed
+                // live: the head only started moving once the behaviour fired
+                // via a transition) and re-asserts the tracking control after
+                // VRChat's own systems reset it — observed live: a jump (or
+                // any client animation event that sets tracking back to
+                // Tracking) permanently froze the head under a fire-once
+                // design (issue #25).
+                var loop = stateMachine.AddState(layerName + "_Loop");
+                loop.motion = tree;
+                loop.writeDefaultValues = false;
+                configureState?.Invoke(loop);
+                var forward = state.AddTransition(loop);
+                forward.hasExitTime = true;
+                forward.exitTime = 1f;
+                forward.duration = 0f;
+                var back = loop.AddTransition(state);
+                back.hasExitTime = true;
+                back.exitTime = 1f;
+                back.duration = 0f;
             }
-            else
-            {
-                stateMachine.defaultState = state;
-            }
+            stateMachine.defaultState = state;
 
             layers.Add(new AnimatorControllerLayer
             {
