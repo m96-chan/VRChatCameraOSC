@@ -253,6 +253,13 @@ namespace VRChatCameraOsc.AvatarSetup
                 name = LayerNameFor(paramName),
                 blendType = type,
                 blendParameter = paramName,
+                // Default is true, and automatic mode redistributes child
+                // thresholds across the tree's 0..1 default range on AddChild
+                // — which silently moved the eyelid tree's 0.75 neutral
+                // threshold to 1.0 (caught by the EditMode suite, issue #21).
+                // Every tree here passes explicit thresholds; never let Unity
+                // rewrite them.
+                useAutomaticThresholds = false,
             };
             AssetDatabase.AddObjectToAsset(tree, controller);
             return tree;

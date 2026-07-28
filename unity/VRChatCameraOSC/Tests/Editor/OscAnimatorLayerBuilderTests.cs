@@ -90,13 +90,21 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         }
 
         [Test]
-        public void AddHeadPoseLayer_UsesAdditiveBlending()
+        public void AddHeadPoseLayer_UsesAdditiveBlending_WithExplicitThresholds()
         {
             OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
 
             var layer = _controller.layers.First(l => l.name == "OSC_v2_Head_Roll");
             Assert.AreEqual(AnimatorLayerBlendingMode.Additive, layer.blendingMode);
             Assert.IsTrue(_controller.parameters.Any(p => p.name == "v2/Head/Roll"));
+
+            // Guard against useAutomaticThresholds rewriting the -1/0/1
+            // spread (same failure mode the eyelid tree hit — issue #21).
+            var tree = (BlendTree)layer.stateMachine.states.Single().state.motion;
+            Assert.IsFalse(tree.useAutomaticThresholds);
+            CollectionAssert.AreEqual(
+                new[] { -1f, 0f, 1f },
+                tree.children.Select(c => c.threshold).ToArray());
         }
 
         [Test]

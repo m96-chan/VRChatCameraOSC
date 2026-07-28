@@ -119,9 +119,19 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         [Test]
         public void EnsureGestureController_WhenDefaultAndNoStockAssetFound_CreatesBlankControllerAndReportsFallback()
         {
-            // No "vrc_AvatarV3HandsLayer"-named asset exists anywhere in this
-            // test run (nothing created it), so this must fall back to a
-            // blank controller rather than throwing or silently no-op'ing.
+            // This scenario needs a project where no "vrc_AvatarV3HandsLayer"
+            // asset exists at all. Newer VRChat SDK packages ship it inside
+            // Packages/com.vrchat.avatars/Samples (visible to
+            // AssetDatabase.FindAssets without any sample import), and a test
+            // cannot delete package contents — skip there instead of
+            // asserting an unreachable state (issue #21 EditMode run).
+            if (AvatarSetupWindow.FindDefaultHandsControllerAssetPath() != null)
+            {
+                Assert.Ignore(
+                    "stock hands controller ships inside this SDK package — " +
+                    "the no-asset fallback path is unreachable in this project");
+            }
+
             _descriptor.baseAnimationLayers = SingleGestureLayer(isDefault: true);
 
             var result = AvatarSetupWindow.EnsureGestureController(_descriptor, out var copiedDefault);
