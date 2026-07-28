@@ -192,6 +192,140 @@ fn calibrate_neutral_without_tracker_is_a_harmless_noop() {
     assert_eq!(recorded.lock().unwrap().len(), 0);
 }
 
+// Hand tracking → gesture ints (issue #8): a stub HandTracker drives the
+// real GestureMapper through Pipeline::with_hands.
+mod hands {
+    use super::*;
+    use vrchat_camera_osc::mapping::gesture::{
+        GestureMapper, GestureMapperConfig, DEBOUNCE_FRAMES,
+    };
+    use vrchat_camera_osc::osc::OscValue;
+    use vrchat_camera_osc::tracking::hands::{HandFrame, HandTracker, Handedness};
+
+    /// A hand tracker that always reports the same hands.
+    struct StubHandTracker(Vec<HandFrame>);
+    impl HandTracker for StubHandTracker {
+        fn track(&mut self, _frame: &Frame) -> anyhow::Result<Vec<HandFrame>> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// An upright open hand (all fingers extended, thumb splayed) — the same
+    /// synthetic geometry the gesture unit tests use.
+    fn open_hand(handedness: Handedness) -> HandFrame {
+        let mut p = [[0.0f32; 3]; 21];
+        p[0] = [0.50, 0.90, 0.0]; // wrist
+        p[1] = [0.42, 0.82, 0.0]; // thumb CMC
+        p[2] = [0.37, 0.76, 0.0]; // thumb MCP
+        p[3] = [0.32, 0.70, 0.0]; // thumb IP
+        p[4] = [0.27, 0.65, 0.0]; // thumb TIP
+        for (f, mcp) in [[0.40f32, 0.60], [0.47, 0.58], [0.54, 0.60], [0.60, 0.63]]
+            .iter()
+            .enumerate()
+        {
+            let base = 5 + f * 4;
+            p[base] = [mcp[0], mcp[1], 0.0];
+            p[base + 1] = [mcp[0], mcp[1] - 0.07, 0.0];
+            p[base + 2] = [mcp[0], mcp[1] - 0.12, 0.0];
+            p[base + 3] = [mcp[0], mcp[1] - 0.16, 0.0];
+        }
+        HandFrame {
+            handedness,
+            confidence: 0.9,
+            points: p,
+        }
+    }
+
+    fn int_param(params: &[OscParam], name: &str) -> Option<i32> {
+        params
+            .iter()
+            .find(|p| p.name == name)
+            .map(|p| match p.value {
+                OscValue::Int(v) => v,
+                ref other => panic!("{name} is not an int: {other:?}"),
+            })
+    }
+
+    #[test]
+    fn pipeline_with_hands_appends_gesture_ints_even_without_a_face() {
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let sink = RecordingSink(recorded.clone());
+        // No face tracker at all: gestures must still flow.
+        let mut pipeline = Pipeline::new(
+            Box::new(FakeCamera::new(320, 240)),
+            None,
+            mapper(),
+            Box::new(sink),
+        )
+        .with_hands(
+            Box::new(StubHandTracker(vec![open_hand(Handedness::Right)])),
+            GestureMapper::new(GestureMapperConfig::default()),
+            1,
+        );
+
+        let mut outcome = pipeline.step().unwrap();
+        for _ in 0..DEBOUNCE_FRAMES {
+            outcome = pipeline.step().unwrap();
+        }
+        // mirror (default): the model-Right hand is the user's left.
+        assert_eq!(int_param(&outcome.params, "VCO_GestureLeft"), Some(2));
+        assert_eq!(int_param(&outcome.params, "VCO_GestureRight"), Some(0));
+        assert_eq!(int_param(&outcome.params, "GestureLeft"), Some(2));
+        assert!(!recorded.lock().unwrap().is_empty(), "params were sent");
+    }
+
+    #[test]
+    fn hands_interval_throttles_the_hand_stage() {
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let sink = RecordingSink(recorded.clone());
+        let mut pipeline = Pipeline::new(
+            Box::new(FakeCamera::new(64, 48)),
+            None,
+            mapper(),
+            Box::new(sink),
+        )
+        .with_hands(
+            Box::new(StubHandTracker(Vec::new())),
+            GestureMapper::new(GestureMapperConfig {
+                emit_native: false,
+                ..Default::default()
+            }),
+            2,
+        );
+
+        // Interval 2: frames 0, 2 run the hand stage (2 params each);
+        // frames 1, 3 skip it entirely.
+        let per_hand_frame = 2;
+        for (i, expect) in [(0u32, per_hand_frame), (1, 0), (2, per_hand_frame), (3, 0)] {
+            let outcome = pipeline.step().unwrap();
+            assert_eq!(outcome.params.len(), expect, "frame {i}");
+        }
+    }
+
+    #[test]
+    fn gesture_params_ride_alongside_face_params() {
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let sink = RecordingSink(recorded.clone());
+        let mut pipeline = Pipeline::new(
+            Box::new(FakeCamera::new(320, 240)),
+            Some(Box::new(StubArkitTracker(resting_arkit_frame()))),
+            mapper(),
+            Box::new(sink),
+        )
+        .with_hands(
+            Box::new(StubHandTracker(Vec::new())),
+            GestureMapper::new(GestureMapperConfig::default()),
+            1,
+        );
+
+        let outcome = pipeline.step().unwrap();
+        let names: Vec<&str> = outcome.params.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"v2/JawOpen"), "face params still present");
+        assert!(names.contains(&"VCO_GestureLeft"));
+        assert!(names.contains(&"VCO_GestureRight"));
+    }
+}
+
 // Native /tracking/eye/* output (issue #19) is appended to the parameter set
 // and participates in neutral calibration.
 #[test]

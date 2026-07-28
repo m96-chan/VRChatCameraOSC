@@ -36,6 +36,7 @@ pub struct Config {
     pub camera: CameraConfig,
     pub mapping: MappingConfig,
     pub eye: EyeConfig,
+    pub hands: HandsConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -87,6 +88,40 @@ impl Default for EyeConfig {
             native: true,
             yaw_range_deg: range.yaw_deg,
             pitch_range_deg: range.pitch_deg,
+        }
+    }
+}
+
+/// Hand tracking → VRChat gestures (issue #8): the MediaPipe palm-detection
+/// + hand-landmark stack feeding `mapping::gesture`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct HandsConfig {
+    /// Run the hand tracker (models auto-download like the face stack).
+    /// CLI override: `--hands on|off`.
+    pub enabled: bool,
+    /// Handedness mirroring (see `mapping::gesture::GestureMapperConfig`):
+    /// `true` (default, raw webcam) puts the user's left hand on
+    /// `GestureLeft`.
+    pub mirror: bool,
+    /// Maximum simultaneously tracked hands (clamped to >= 1 at build).
+    pub max_hands: u32,
+    /// Also emit the native `GestureLeft`/`GestureRight` addresses
+    /// (read-only in current VRChat, but forward-compatible — issue #8 §1).
+    pub emit_native: bool,
+    /// Run the hand stage every N pipeline frames (1 = every frame — the
+    /// issue-#8 default decision; raise to shed load if combined FPS drops).
+    pub interval: u32,
+}
+
+impl Default for HandsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            mirror: true,
+            max_hands: 2,
+            emit_native: true,
+            interval: 1,
         }
     }
 }

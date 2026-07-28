@@ -284,6 +284,41 @@ fn oscquery_defaults_on_and_is_configurable() {
     assert!(!cfg.osc.oscquery);
 }
 
+// Hand tracking (issue #8): [hands] enabled / mirror / max_hands /
+// emit_native / interval.
+#[test]
+fn hands_defaults_and_legacy_files_without_the_section() {
+    let d = Config::default().hands;
+    assert!(d.enabled);
+    assert!(d.mirror);
+    assert_eq!(d.max_hands, 2);
+    assert!(d.emit_native);
+    assert_eq!(d.interval, 1);
+
+    // A config file written before [hands] existed still loads (defaults).
+    let cfg: Config = toml::from_str("[osc]\nport = 9000\n").unwrap();
+    assert_eq!(cfg.hands, Config::default().hands);
+    // Partial [hands] section: absent keys fall back per-field.
+    let cfg: Config = toml::from_str("[hands]\nenabled = false\n").unwrap();
+    assert!(!cfg.hands.enabled);
+    assert!(cfg.hands.mirror, "unset keys keep their defaults");
+}
+
+#[test]
+fn hands_section_round_trips() {
+    let mut cfg = Config::default();
+    cfg.hands.mirror = false;
+    cfg.hands.max_hands = 1;
+    cfg.hands.emit_native = false;
+    cfg.hands.interval = 2;
+
+    let dir = TempDir::new("hands-roundtrip");
+    let path = dir.join("config.toml");
+    cfg.save(&path).unwrap();
+    let loaded = Config::load(&path).unwrap();
+    assert_eq!(loaded.hands, cfg.hands);
+}
+
 #[test]
 fn avatar_config_dir_defaults_to_none_and_round_trips() {
     assert_eq!(Config::default().mapping.avatar_config_dir, None);

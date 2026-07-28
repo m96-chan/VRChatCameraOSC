@@ -23,6 +23,13 @@ namespace VRChatCameraOsc.AvatarSetup
         /// Gesture-layer (Humanoid muscle curves) — never a runtime script,
         /// see the package README for why.</summary>
         HeadPose,
+
+        /// <summary>Int 0..7 on the standard VRChat gesture scale (0 Neutral,
+        /// 1 Fist … 7 ThumbsUp), driving finger-muscle hand poses on the
+        /// Gesture layer (issue #8). Declared as an <b>Int</b> expression
+        /// parameter, not Float. No blend shape to pick — muscle-driven, so
+        /// the wizard's picker UI skips it entirely.</summary>
+        GestureInt,
     }
 
     /// <summary>One OSC parameter this app sends, and how an avatar should react.</summary>
@@ -92,6 +99,14 @@ namespace VRChatCameraOsc.AvatarSetup
             new OscParamSpec("v2/Head/Yaw", -1f, 1f, 0f, OscParamKind.HeadPose),
             new OscParamSpec("v2/Head/Pitch", -1f, 1f, 0f, OscParamKind.HeadPose),
             new OscParamSpec("v2/Head/Roll", -1f, 1f, 0f, OscParamKind.HeadPose),
+            // Hand gestures (issue #8): custom Int transport for the standard
+            // VRChat gesture index — the native GestureLeft/Right addresses
+            // are read-only over OSC (vrchat-community/osc#42), so the
+            // tracker sends these instead. Values keep the standard 0-7
+            // scale (0 Neutral, 1 Fist, 2 HandOpen, 3 FingerPoint, 4 Victory,
+            // 5 RockNRoll, 6 HandGun, 7 ThumbsUp). Always declared (core).
+            new OscParamSpec("VCO_GestureLeft", 0f, 7f, 0f, OscParamKind.GestureInt),
+            new OscParamSpec("VCO_GestureRight", 0f, 7f, 0f, OscParamKind.GestureInt),
             // ---- Optional extras (issue #24): declared only when wired, so
             // they cost expression-parameter bits only on avatars that have
             // the shapes. All are ARKit-52-drivable and already emitted by

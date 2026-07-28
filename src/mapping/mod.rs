@@ -15,8 +15,11 @@
 //!   orthogonal to the parameter mapping.
 //! - [`arkit`] — shared calibration/smoothing machinery (One-Euro filters,
 //!   neutral baselines, deadzone), ported from AvataCam.
+//! - [`gesture`] — 21 hand landmarks → VRChat gesture ints
+//!   (`VCO_GestureLeft/Right` + optional native addresses, issue #8).
 
 pub mod arkit;
 pub mod avatar;
 pub mod eye;
+pub mod gesture;
 pub mod unified;

@@ -25,7 +25,10 @@ mod detector;
 mod mesh;
 mod roi;
 mod subset;
-mod util;
+/// `pub(crate)`: the pixel helpers (`sample_rgb255`, `iou`) are shared with
+/// the hand-tracking stages (issue #8), which face the same packed-RGB8
+/// frames and the same NMS math.
+pub(crate) mod util;
 
 pub use detector::{Detection, FaceDetector};
 pub use roi::{face_roi, face_roi_from_landmarks, roi_in_frame, FaceRoi};

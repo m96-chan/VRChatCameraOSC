@@ -34,7 +34,13 @@ namespace VRChatCameraOsc.AvatarSetup
                 merged.Add(new VRCExpressionParameters.Parameter
                 {
                     name = spec.Name,
-                    valueType = VRCExpressionParameters.ValueType.Float,
+                    // Gesture ints (issue #8) are the standard 0-7 VRChat
+                    // gesture scale — an Int parameter, so the Animator's
+                    // Equals-conditioned pose transitions can key off exact
+                    // values. Everything else this wizard declares is Float.
+                    valueType = spec.Kind == OscParamKind.GestureInt
+                        ? VRCExpressionParameters.ValueType.Int
+                        : VRCExpressionParameters.ValueType.Float,
                     // Non-zero for v2/EyeLid* (0.75 = relaxed open, VRCFT
                     // semantics): with no tracker sending, the avatar must
                     // rest with open eyes, not shut ones (issue #21).

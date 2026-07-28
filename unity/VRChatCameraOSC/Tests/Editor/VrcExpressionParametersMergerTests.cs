@@ -20,7 +20,11 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             CollectionAssert.AreEquivalent(
                 OscParameterSpec.All.Select(s => s.Name).ToArray(),
                 asset.parameters.Select(p => p.name).ToArray());
-            Assert.IsTrue(asset.parameters.All(p => p.valueType == VRCExpressionParameters.ValueType.Float));
+            // Everything is Float except the hand-gesture ints (issue #8).
+            Assert.IsTrue(asset.parameters.All(p => p.valueType ==
+                (p.name.StartsWith("VCO_Gesture")
+                    ? VRCExpressionParameters.ValueType.Int
+                    : VRCExpressionParameters.ValueType.Float)));
 
             Object.DestroyImmediate(asset);
         }

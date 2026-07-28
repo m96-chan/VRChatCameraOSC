@@ -14,9 +14,11 @@
 use crate::capture::CameraSource;
 use crate::mapping::avatar::AvatarWatcher;
 use crate::mapping::eye::NativeEyeMapper;
+use crate::mapping::gesture::GestureMapper;
 use crate::mapping::unified::UnifiedMapper;
 use crate::osc::{OscParam, OscSink};
 use crate::tracking::arkit::ArkitFaceTracker;
+use crate::tracking::hands::HandTracker;
 use anyhow::Result;
 
 /// What one [`Pipeline::step`] produced — for the TUI/monitor to display.
@@ -38,10 +40,23 @@ pub struct Pipeline {
     /// Optional native `/tracking/eye/*` output appended to every frame's
     /// params (issue #19) — orthogonal to the parameter mapping.
     eye: Option<Box<NativeEyeMapper>>,
+    /// Optional hand tracking → gesture ints appended to the frame's params
+    /// (issue #8) — runs on the same captured frame, independent of the
+    /// face path (gestures still go out when no face is tracked).
+    hands: Option<HandsStage>,
     sink: Box<dyn OscSink>,
     /// Avatar-aware gating (issue #18 phase 3): polled once per step for
     /// `/avatar/change`; feeds the mapper's `set_avatar_config`.
     watcher: Option<AvatarWatcher>,
+}
+
+/// The attached hand stage (issue #8): tracker + gesture mapper + cadence.
+struct HandsStage {
+    tracker: Box<dyn HandTracker>,
+    gesture: GestureMapper,
+    /// Run the hand stage every `interval`-th frame (1 = every frame).
+    interval: u32,
+    frame_index: u32,
 }
 
 impl Pipeline {
@@ -58,9 +73,29 @@ impl Pipeline {
             tracker,
             mapper,
             eye: None,
+            hands: None,
             sink,
             watcher: None,
         }
+    }
+
+    /// Attach the hand tracking stage (issue #8): `tracker` runs on the same
+    /// captured frame every `interval`-th step (clamped to >= 1), `gesture`
+    /// turns its hands into the `VCO_Gesture*` (+ optional native) ints
+    /// appended to the frame's parameters.
+    pub fn with_hands(
+        mut self,
+        tracker: Box<dyn HandTracker>,
+        gesture: GestureMapper,
+        interval: u32,
+    ) -> Self {
+        self.hands = Some(HandsStage {
+            tracker,
+            gesture,
+            interval: interval.max(1),
+            frame_index: 0,
+        });
+        self
     }
 
     /// Attach an [`AvatarWatcher`] (issue #18 phase 3): applies its startup
@@ -100,16 +135,30 @@ impl Pipeline {
             ..Default::default()
         };
 
+        let mut params = Vec::new();
         if let Some(tracker) = self.tracker.as_mut() {
             if let Some(face) = tracker.track(&frame)? {
-                let mut params = self.mapper.map(&face);
+                params = self.mapper.map(&face);
                 if let Some(eye) = self.eye.as_mut() {
                     params.extend(eye.map(&face));
                 }
-                self.sink.send(&params)?;
-                outcome.params = params;
             }
         }
+
+        // Hands run on the same frame, independent of the face outcome
+        // (issue #8) — gesture ints go out even when no face is tracked.
+        if let Some(hands) = self.hands.as_mut() {
+            if hands.frame_index.is_multiple_of(hands.interval) {
+                let tracked = hands.tracker.track(&frame)?;
+                params.extend(hands.gesture.map(&tracked));
+            }
+            hands.frame_index = hands.frame_index.wrapping_add(1);
+        }
+
+        if !params.is_empty() {
+            self.sink.send(&params)?;
+        }
+        outcome.params = params;
         Ok(outcome)
     }
 

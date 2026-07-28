@@ -277,6 +277,212 @@ namespace VRChatCameraOsc.AvatarSetup
             return mask;
         }
 
+        /// <summary>Animator/expression parameter names for the hand-gesture
+        /// Int layers (issue #8) — the tracker's custom transport for the
+        /// standard 0-7 VRChat gesture scale (native <c>GestureLeft/Right</c>
+        /// are read-only over OSC, vrchat-community/osc#42).</summary>
+        public const string GestureLeftParam = "VCO_GestureLeft";
+        public const string GestureRightParam = "VCO_GestureRight";
+
+        /// <summary>Pose state names by gesture index − 1 (index 0 is the
+        /// empty Neutral state): the standard VRChat gesture table
+        /// (creators.vrchat.com/avatars/animator-parameters).</summary>
+        internal static readonly string[] GesturePoseNames =
+        {
+            "Fist", "HandOpen", "FingerPoint", "Victory", "RockNRoll", "HandGun", "ThumbsUp",
+        };
+
+        /// <summary>Finger order used by the pose table below.</summary>
+        static readonly string[] Fingers = { "Thumb", "Index", "Middle", "Ring", "Little" };
+
+        /// <summary>
+        /// Per-gesture finger-muscle targets, finger order Thumb / Index /
+        /// Middle / Ring / Little. <c>stretch</c> feeds every "N Stretched"
+        /// joint muscle of that finger (+1 = fully extended/straight, −1 =
+        /// fully curled — thumb has joints 1..3 + Spread, same as the other
+        /// fingers in Unity's Humanoid rig); <c>spread</c> feeds the finger's
+        /// single "Spread" muscle (positive fans fingers apart, matching the
+        /// grouped finger-spread muscle-settings slider). Spread values are
+        /// cosmetic tuning (webcam gestures are recognized by curl pattern
+        /// alone): HandOpen fans slightly, Victory separates the V,
+        /// ThumbsUp/HandGun stick the thumb out.
+        /// </summary>
+        static readonly (string pose, float[] stretch, float[] spread)[] GesturePoseTable =
+        {
+            // pose            Thumb Index Middle Ring Little
+            ("Fist", new[] { -1f, -1f, -1f, -1f, -1f }, new[] { 0f, 0f, 0f, 0f, 0f }),
+            ("HandOpen", new[] { 1f, 1f, 1f, 1f, 1f }, new[] { 0.5f, 0.5f, 0.5f, 0.5f, 0.5f }),
+            ("FingerPoint", new[] { -1f, 1f, -1f, -1f, -1f }, new[] { 0f, 0f, 0f, 0f, 0f }),
+            ("Victory", new[] { -1f, 1f, 1f, -1f, -1f }, new[] { 0f, 0.5f, -0.5f, 0f, 0f }),
+            ("RockNRoll", new[] { 1f, 1f, -1f, -1f, 1f }, new[] { 0.5f, 0f, 0f, 0f, 0f }),
+            ("HandGun", new[] { 1f, 1f, -1f, -1f, -1f }, new[] { 1f, 0f, 0f, 0f, 0f }),
+            ("ThumbsUp", new[] { 1f, -1f, -1f, -1f, -1f }, new[] { 1f, 0f, 0f, 0f, 0f }),
+        };
+
+        /// <summary>Seconds of cross-fade between hand poses — condition-based
+        /// transitions, so this is pure smoothing (an Int snap would otherwise
+        /// teleport the fingers).</summary>
+        const float GestureTransitionSeconds = 0.1f;
+
+        /// <summary>
+        /// The animatable muscle-curve property names for one hand's finger
+        /// muscles, 4 per finger (joints 1..3 Stretched + Spread), 20 total.
+        /// NOTE the finger quirk: <see cref="HumanTrait.MuscleName"/> lists
+        /// these as e.g. <c>"Left Thumb 1 Stretched"</c>, but the property
+        /// name an <see cref="EditorCurveBinding"/> (and the Animation
+        /// window) actually binds is <c>"LeftHand.Thumb.1 Stretched"</c> —
+        /// unlike the head muscles, where the two names coincide. Verified
+        /// empirically in MuscleNameValidityTests (a clip bound with these
+        /// names reports <c>humanMotion == true</c>; the HumanTrait spelling
+        /// does not).
+        /// </summary>
+        internal static IEnumerable<string> FingerMuscleProperties(bool leftHand)
+        {
+            var hand = leftHand ? "LeftHand" : "RightHand";
+            foreach (var finger in Fingers)
+            {
+                yield return $"{hand}.{finger}.1 Stretched";
+                yield return $"{hand}.{finger}.Spread";
+                yield return $"{hand}.{finger}.2 Stretched";
+                yield return $"{hand}.{finger}.3 Stretched";
+            }
+        }
+
+        /// <summary>
+        /// ONE Gesture-controller layer per hand (<c>OSC_VCO_GestureLeft</c> /
+        /// <c>OSC_VCO_GestureRight</c>, issue #8) posing that hand's fingers
+        /// from the tracker's <c>VCO_Gesture*</c> Int (standard 0-7 scale):
+        ///
+        /// - The default <b>Neutral</b> state is EMPTY (no motion): at 0 the
+        ///   layer writes nothing, so VRChat's own keyboard/controller hand
+        ///   gestures on the stock layers below keep working untouched.
+        /// - 7 pose states (Fist … ThumbsUp), each a 1-second flat
+        ///   finger-muscle clip (real length by convention — zero-length
+        ///   clips broke exit-time machinery elsewhere in this controller,
+        ///   issue #25 — though these transitions are condition-based).
+        /// - Any-state transitions conditioned <c>Equals</c> the int value,
+        ///   0.1 s fixed duration for smoothing, canTransitionToSelf off so a
+        ///   held gesture doesn't retrigger the cross-fade.
+        /// - A per-hand AvatarMask restricted to that hand's Fingers body
+        ///   part only (mirrors GetOrCreateHeadOnlyMask — Humanoid
+        ///   retargeting must not leak outside the hand).
+        /// - Deliberately NO VRCAnimatorTrackingControl: fingers aren't
+        ///   IK-held on Desktop — the stock gesture layers prove plain
+        ///   muscle-driven hand poses just work. The Gesture playable layer's
+        ///   first-layer mask (stock vrc_HandsOnly, or the wizard's
+        ///   OSC_GestureMask) already allows both Fingers parts, so nothing
+        ///   extra is needed there either.
+        /// </summary>
+        public static void AddHandGestureLayer(AnimatorController controller, bool leftHand)
+        {
+            var paramName = leftHand ? GestureLeftParam : GestureRightParam;
+
+            // Full sub-asset cleanup before rebuilding (idempotent re-Apply
+            // without orphaned clips/transitions accumulating in the asset).
+            RemoveLayer(controller, paramName);
+
+            if (!controller.parameters.Any(p => p.name == paramName))
+            {
+                controller.AddParameter(paramName, AnimatorControllerParameterType.Int);
+            }
+
+            var layerName = LayerNameFor(paramName);
+            var stateMachine = new AnimatorStateMachine { name = layerName, hideFlags = HideFlags.HideInHierarchy };
+            AssetDatabase.AddObjectToAsset(stateMachine, controller);
+
+            var neutral = stateMachine.AddState("Neutral");
+            neutral.motion = null;
+            neutral.writeDefaultValues = false;
+            stateMachine.defaultState = neutral;
+            ConfigureGestureTransition(stateMachine.AddAnyStateTransition(neutral), paramName, 0);
+
+            for (var i = 0; i < GesturePoseTable.Length; i++)
+            {
+                var (pose, stretch, spread) = GesturePoseTable[i];
+                var state = stateMachine.AddState(pose);
+                state.motion = HandPoseClip(controller, layerName, leftHand, pose, stretch, spread);
+                state.writeDefaultValues = false;
+                ConfigureGestureTransition(stateMachine.AddAnyStateTransition(state), paramName, i + 1);
+            }
+
+            var layers = controller.layers.ToList();
+            layers.Add(new AnimatorControllerLayer
+            {
+                name = layerName,
+                stateMachine = stateMachine,
+                defaultWeight = 1f,
+                blendingMode = AnimatorLayerBlendingMode.Override,
+                avatarMask = GetOrCreateFingersOnlyMask(controller, leftHand),
+            });
+            controller.layers = layers.ToArray();
+        }
+
+        static void ConfigureGestureTransition(AnimatorStateTransition transition, string paramName, int value)
+        {
+            transition.hasExitTime = false;
+            transition.hasFixedDuration = true;
+            transition.duration = GestureTransitionSeconds;
+            transition.canTransitionToSelf = false;
+            transition.AddCondition(AnimatorConditionMode.Equals, value, paramName);
+        }
+
+        /// <summary>One pose clip writing ALL 20 of that hand's finger
+        /// muscles as flat 1-second curves (<see cref="MuscleClipSeconds"/>)
+        /// — every pose animates the full set so the whole-group override
+        /// always carries every finger, never a stale default.</summary>
+        static AnimationClip HandPoseClip(
+            AnimatorController controller,
+            string layerName,
+            bool leftHand,
+            string pose,
+            float[] stretch,
+            float[] spread)
+        {
+            var clip = new AnimationClip { name = $"{layerName}_{pose}" };
+            var hand = leftHand ? "LeftHand" : "RightHand";
+            for (var f = 0; f < Fingers.Length; f++)
+            {
+                foreach (var joint in new[] { "1 Stretched", "2 Stretched", "3 Stretched", "Spread" })
+                {
+                    var value = joint == "Spread" ? spread[f] : stretch[f];
+                    var binding = EditorCurveBinding.FloatCurve(
+                        string.Empty, typeof(Animator), $"{hand}.{Fingers[f]}.{joint}");
+                    var curve = new AnimationCurve(
+                        new Keyframe(0f, value),
+                        new Keyframe(MuscleClipSeconds, value));
+                    AnimationUtility.SetEditorCurve(clip, binding, curve);
+                }
+            }
+            AssetDatabase.AddObjectToAsset(clip, controller);
+            return clip;
+        }
+
+        /// <summary>Per-hand fingers-only mask (mirrors
+        /// <see cref="GetOrCreateHeadOnlyMask"/>): contains the layer's
+        /// written effect to that hand's Fingers body part so Humanoid
+        /// retargeting can't perturb the arm/body — fingers only is the
+        /// safest restriction, and it's all the pose clips animate.</summary>
+        static AvatarMask GetOrCreateFingersOnlyMask(AnimatorController controller, bool leftHand)
+        {
+            var maskName = leftHand ? "OSC_LeftFingersMask" : "OSC_RightFingersMask";
+            var allowed = leftHand ? AvatarMaskBodyPart.LeftFingers : AvatarMaskBodyPart.RightFingers;
+            var existing = AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(controller))
+                .OfType<AvatarMask>()
+                .FirstOrDefault(m => m.name == maskName);
+            if (existing != null)
+            {
+                return existing;
+            }
+
+            var mask = new AvatarMask { name = maskName };
+            for (var part = AvatarMaskBodyPart.Root; part < AvatarMaskBodyPart.LastBodyPart; part++)
+            {
+                mask.SetHumanoidBodyPartActive(part, part == allowed);
+            }
+            AssetDatabase.AddObjectToAsset(mask, controller);
+            return mask;
+        }
+
         /// <summary>Whether an <c>OSC_&lt;paramName&gt;</c> layer currently exists — the
         /// "ON" state the wizard's toggle button reads to decide Apply vs. Remove.</summary>
         public static bool HasLayer(AnimatorController controller, string paramName)
@@ -342,6 +548,20 @@ namespace VRChatCameraOsc.AvatarSetup
                     }
                     AssetDatabase.RemoveObjectFromAsset(childState.state);
                     Object.DestroyImmediate(childState.state, true);
+                }
+
+                // The hand-gesture layers (issue #8) switch pose states via
+                // any-state transitions — those live on the state machine, not
+                // on any state's `transitions`, and are sub-assets like the
+                // rest.
+                foreach (var transition in layer.stateMachine.anyStateTransitions)
+                {
+                    if (transition == null)
+                    {
+                        continue;
+                    }
+                    AssetDatabase.RemoveObjectFromAsset(transition);
+                    Object.DestroyImmediate(transition, true);
                 }
                 AssetDatabase.RemoveObjectFromAsset(layer.stateMachine);
                 Object.DestroyImmediate(layer.stateMachine, true);

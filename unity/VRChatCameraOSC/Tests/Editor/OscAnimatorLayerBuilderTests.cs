@@ -326,6 +326,10 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
                             OscAnimatorLayerBuilder.AddCombinedHeadLayer(controller);
                         }
                         break;
+                    case OscParamKind.GestureInt:
+                        OscAnimatorLayerBuilder.AddHandGestureLayer(
+                            controller, spec.Name == OscAnimatorLayerBuilder.GestureLeftParam);
+                        break;
                 }
             }
         }

@@ -33,6 +33,10 @@ namespace VRChatCameraOsc.AvatarSetup
         readonly Dictionary<string, SkinnedMeshRenderer> _wideRenderer = new Dictionary<string, SkinnedMeshRenderer>();
         readonly Dictionary<string, string> _wideBlendShape = new Dictionary<string, string>();
         bool _includeHeadPose = true;
+        /// <summary>Wire the VCO_GestureLeft/Right Int hand-pose layers on
+        /// the Gesture controller (issue #8). No blend shape involved —
+        /// muscle-driven, so no picker; just this toggle.</summary>
+        bool _includeHandGestures = true;
         bool _disableNativeEyelids = true;
         bool _pendingAutoFill;
         Vector2 _scroll;
@@ -97,7 +101,10 @@ namespace VRChatCameraOsc.AvatarSetup
             _scroll = EditorGUILayout.BeginScrollView(_scroll);
             foreach (var spec in OscParameterSpec.All)
             {
-                if (spec.Kind == OscParamKind.HeadPose)
+                // Head pose and hand gestures are muscle-driven (no blend
+                // shape to pick) — their wiring is the toggles below, not a
+                // picker row.
+                if (spec.Kind == OscParamKind.HeadPose || spec.Kind == OscParamKind.GestureInt)
                 {
                     continue;
                 }
@@ -109,6 +116,9 @@ namespace VRChatCameraOsc.AvatarSetup
             _includeHeadPose = EditorGUILayout.ToggleLeft(
                 "Wire v2/Head/Yaw / Pitch / Roll to the Humanoid head bone (additive layer)",
                 _includeHeadPose);
+            _includeHandGestures = EditorGUILayout.ToggleLeft(
+                "Wire hand gestures (VCO_GestureLeft/Right) to Humanoid finger muscles (Gesture layer)",
+                _includeHandGestures);
 
             var eyelidType = _avatar.customEyeLookSettings.eyelidType;
             if (eyelidType != VRCAvatarDescriptor.EyelidType.None &&
@@ -185,7 +195,7 @@ namespace VRChatCameraOsc.AvatarSetup
 
             foreach (var spec in OscParameterSpec.All)
             {
-                if (spec.Kind == OscParamKind.HeadPose)
+                if (spec.Kind == OscParamKind.HeadPose || spec.Kind == OscParamKind.GestureInt)
                 {
                     continue;
                 }
@@ -326,9 +336,13 @@ namespace VRChatCameraOsc.AvatarSetup
                 OscAnimatorLayerBuilder.RemoveLayer(controller, stale.Name);
             }
 
-            if (_includeHeadPose)
+            if (_includeHeadPose || _includeHandGestures)
             {
                 gestureController = EnsureGestureController(_avatar, out gestureCopiedDefaultHands);
+            }
+
+            if (_includeHeadPose)
+            {
                 // Migrate the per-axis head layers a previous version added —
                 // left in place they would group-override the combined layer
                 // (issue #27), the very bug being fixed.
@@ -341,6 +355,16 @@ namespace VRChatCameraOsc.AvatarSetup
                 // Gesture first-layer mask (stock: vrc_HandsOnly) is AND-ed
                 // over the whole playable layer (issue #25).
                 EnsureGestureMaskAllowsHead(_avatar, gestureController);
+            }
+
+            if (_includeHandGestures)
+            {
+                // Hand-pose Int layers (issue #8). No first-layer-mask work
+                // needed here, unlike head pose: both the stock vrc_HandsOnly
+                // mask and the wizard's combined OSC_GestureMask already
+                // allow the Left/RightFingers parts these layers animate.
+                OscAnimatorLayerBuilder.AddHandGestureLayer(gestureController, leftHand: true);
+                OscAnimatorLayerBuilder.AddHandGestureLayer(gestureController, leftHand: false);
             }
 
             // Migrate away from the Additive-playable-layer experiment
@@ -381,6 +405,11 @@ namespace VRChatCameraOsc.AvatarSetup
                 $"Done. Added {added} new expression parameter(s). FX layers wired for the selected blend shapes" +
                 (_includeHeadPose ? " and head pose wired on the Gesture layer (Head = Animation via a" +
                                      " VRCAnimatorTrackingControl)." : ".") +
+                (_includeHandGestures
+                    ? "\n\nHand gestures wired: VCO_GestureLeft/Right (Int 0-7) pose the fingers on the " +
+                      "Gesture layer; at 0 (Neutral) the layers write nothing, so VRChat's own " +
+                      "keyboard/controller hand gestures keep working."
+                    : "") +
                 (_includeHeadPose && !gestureCopiedDefaultHands
                     ? "\n\nCouldn't find the VRC SDK's default hand-gesture controller " +
                       $"(\"{DefaultHandsControllerAssetName}\", normally imported via the SDK's " +
@@ -446,6 +475,15 @@ namespace VRChatCameraOsc.AvatarSetup
                 foreach (var headSpec in OscParameterSpec.All.Where(s => s.Kind == OscParamKind.HeadPose))
                 {
                     if (OscAnimatorLayerBuilder.RemoveLayer(gestureController, headSpec.Name))
+                    {
+                        removedLayers++;
+                    }
+                }
+                // Hand-gesture pose layers (issue #8) — RemoveLayer also
+                // drops their Int animator parameter and per-hand masks.
+                foreach (var gestureSpec in OscParameterSpec.All.Where(s => s.Kind == OscParamKind.GestureInt))
+                {
+                    if (OscAnimatorLayerBuilder.RemoveLayer(gestureController, gestureSpec.Name))
                     {
                         removedLayers++;
                     }

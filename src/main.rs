@@ -31,12 +31,14 @@ use vrchat_camera_osc::config::Config;
 use vrchat_camera_osc::mapping::arkit::ArkitMappingConfig;
 use vrchat_camera_osc::mapping::avatar::{self, AvatarWatcher};
 use vrchat_camera_osc::mapping::eye::{EyeRange, NativeEyeMapper};
+use vrchat_camera_osc::mapping::gesture::{gesture_name, GestureMapper, GestureMapperConfig};
 use vrchat_camera_osc::mapping::unified::UnifiedMapper;
 use vrchat_camera_osc::models;
 use vrchat_camera_osc::osc::oscquery::{MdnsVrchatDiscovery, OscQueryAdvertiser, OscQueryClient};
 use vrchat_camera_osc::osc::{AvatarChangeListener, MonitorSink, OscSink, UdpOscSender};
 use vrchat_camera_osc::pipeline::Pipeline;
 use vrchat_camera_osc::tracking::arkit::ArkitFaceTracker;
+use vrchat_camera_osc::tracking::hands::{HandTracker, HandsTracker};
 use vrchat_camera_osc::tracking::mediapipe::MediapipeTracker;
 use vrchat_camera_osc::tui::{render, UiState};
 
@@ -56,6 +58,8 @@ struct Args {
     native_eye: Option<bool>,
     /// CLI override for `osc.oscquery` (`--oscquery on|off`).
     oscquery: Option<bool>,
+    /// CLI override for `hands.enabled` (`--hands on|off`, issue #8).
+    hands: Option<bool>,
 }
 
 fn parse_args() -> Args {
@@ -67,6 +71,7 @@ fn parse_args() -> Args {
         calibrate_frames: DEFAULT_CALIBRATE_FRAMES,
         native_eye: None,
         oscquery: None,
+        hands: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -109,10 +114,17 @@ fn parse_args() -> Args {
                     eprintln!("--oscquery expects 'on' or 'off' (got {other:?}) — using config")
                 }
             },
+            "--hands" => match it.next().as_deref() {
+                Some("on") => a.hands = Some(true),
+                Some("off") => a.hands = Some(false),
+                other => {
+                    eprintln!("--hands expects 'on' or 'off' (got {other:?}) — using config")
+                }
+            },
             "-h" | "--help" => {
                 println!(
                     "vrchat-camera-osc [--monitor] [--fake] [--frames N] \
-                     [--native-eye on|off] [--oscquery on|off] \
+                     [--native-eye on|off] [--oscquery on|off] [--hands on|off] \
                      [--detect-interval N] [--calibrate-frames N]"
                 );
                 std::process::exit(0);
@@ -205,6 +217,38 @@ fn build_arkit_tracker(detect_interval: Option<u32>) -> Option<Box<dyn ArkitFace
             eprintln!(
                 "failed to load the MediaPipe face stack: {e:#}\n\
                  The loop still runs; it just won't emit parameters."
+            );
+            None
+        }
+    }
+}
+
+/// Build the hand-tracking stage (issue #8): auto-download the two ONNX
+/// models on first run, load the palm + landmark stack, and pair it with the
+/// gesture mapper. Any load failure degrades to "no hand tracking" with a
+/// clear message (same policy as the face stack).
+fn build_hands(cfg: &Config) -> Option<(Box<dyn HandTracker>, GestureMapper, u32)> {
+    if !cfg.hands.enabled {
+        return None;
+    }
+    let palm = models::default_palm_detection_path();
+    let landmarks = models::default_hand_landmarks_path();
+    ensure_model_present(&palm, models::PALM_DETECTION_MODEL_URL);
+    ensure_model_present(&landmarks, models::HAND_LANDMARKS_MODEL_URL);
+
+    match HandsTracker::from_paths(&palm, &landmarks) {
+        Ok(t) => {
+            let tracker = t.with_max_hands(cfg.hands.max_hands.max(1) as usize);
+            let mapper = GestureMapper::new(GestureMapperConfig {
+                mirror: cfg.hands.mirror,
+                emit_native: cfg.hands.emit_native,
+            });
+            Some((Box::new(tracker), mapper, cfg.hands.interval.max(1)))
+        }
+        Err(e) => {
+            eprintln!(
+                "failed to load the hand tracking stack: {e:#}\n\
+                 The loop still runs; it just won't emit gestures."
             );
             None
         }
@@ -319,6 +363,13 @@ fn main() -> Result<()> {
     // advertisement (issue #18 phase 3b).
     let _oscquery_advertiser: Option<OscQueryAdvertiser> = advertiser;
     let mut pipeline = Pipeline::new(camera, tracker, mapper, sink).with_avatar_watcher(watcher);
+    let mut hands_cfg = cfg.clone();
+    if let Some(enabled) = args.hands {
+        hands_cfg.hands.enabled = enabled;
+    }
+    if let Some((hand_tracker, gesture_mapper, interval)) = build_hands(&hands_cfg) {
+        pipeline = pipeline.with_hands(hand_tracker, gesture_mapper, interval);
+    }
     if args.native_eye.unwrap_or(cfg.eye.native) {
         pipeline = pipeline.with_native_eye(NativeEyeMapper::new(
             ArkitMappingConfig::default(),
@@ -397,7 +448,9 @@ fn run_monitor(
                         println!("{} b {v}", p.address())
                     }
                     vrchat_camera_osc::osc::OscValue::Int(v) => {
-                        println!("{} i {v}", p.address())
+                        // Gesture ints (issue #8): decode the name inline so
+                        // the dry-run demo is checkable at a glance.
+                        println!("{} i {v} ({})", p.address(), gesture_name(v))
                     }
                     vrchat_camera_osc::osc::OscValue::Floats4([a, b, c, d]) => {
                         println!("{} f4 {a:.2} {b:.2} {c:.2} {d:.2}", p.address())
@@ -476,6 +529,11 @@ fn tui_loop(
                 .iter()
                 .filter_map(|p| match p.value {
                     vrchat_camera_osc::osc::OscValue::Float(v) => Some((p.name.clone(), v)),
+                    // Gesture ints (the only Int params, issue #8): shown
+                    // with the decoded gesture name for at-a-glance checks.
+                    vrchat_camera_osc::osc::OscValue::Int(v) => {
+                        Some((format!("{} [{}]", p.name, gesture_name(v)), v as f32))
+                    }
                     _ => None,
                 })
                 .collect(),

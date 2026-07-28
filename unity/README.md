@@ -43,6 +43,7 @@ mirroring `src/mapping/unified.rs`):
 | `v2/MouthSmileLeft` / `v2/MouthSmileRight` | `0..1` | 0 | smile shape (shared shape OK) |
 | `v2/MouthStretchLeft` / `v2/MouthStretchRight` | `0..1` | 0 | mouth-widen shape (shared shape OK) |
 | `v2/Head/Yaw` / `v2/Head/Pitch` / `v2/Head/Roll` | `-1..1` | 0 | Humanoid head muscles — **one combined Gesture-layer blend tree** (issues #25/#27) |
+| `VCO_GestureLeft` / `VCO_GestureRight` | **Int** `0..7` | 0 | Humanoid finger muscles — one Gesture-layer hand-pose layer per hand ([issue #8](https://github.com/m96-chan/VRChatCameraOSC/issues/8), [below](#hand-gestures-vco_gestureleftright)) |
 
 Plus **optional extras** (issue #24) — declared (and costing expression
 parameter bits) **only when you wire a blend shape** to them:
@@ -77,6 +78,30 @@ Avatars set up by a pre-issue-#21 version of this wizard carry the retired
 every legacy parameter and `OSC_*` layer first, then wires the `v2/*` set —
 one click migrates in place. **Remove** also cleans both generations.
 Re-upload the avatar afterwards.
+
+### Hand gestures (`VCO_GestureLeft`/`Right`)
+
+VRChat's native `GestureLeft`/`GestureRight` parameters are **read-only over
+OSC** ([vrchat-community/osc#42](https://github.com/vrchat-community/osc/issues/42)),
+so the tracker's webcam hand tracking (issue #8) sends its own
+`VCO_GestureLeft`/`VCO_GestureRight` **Int** parameters instead — same
+standard 0–7 scale (0 Neutral, 1 Fist, 2 HandOpen, 3 FingerPoint, 4 Victory,
+5 RockNRoll, 6 HandGun, 7 ThumbsUp).
+
+Leave the wizard's **"Wire hand gestures"** toggle checked (default) and
+Apply adds one layer per hand to the Gesture controller
+(`OSC_VCO_GestureLeft` / `OSC_VCO_GestureRight`): 7 finger-muscle pose
+states switched by `Equals`-conditioned any-state transitions (0.1 s
+cross-fade), each layer masked to that hand's Fingers body part only.
+
+**The Neutral state is deliberately empty** (no animation): while the
+parameter is 0 — tracker off, no hand on camera, or hand at rest — the layer
+writes nothing, so **VRChat's own keyboard/controller hand gestures on the
+stock Gesture layers underneath keep working exactly as before**. Only a
+recognized camera gesture (1–7) overrides the pose, and it releases back to
+VRChat's control the moment the tracker returns to 0. Unlike head pose, no
+`VRCAnimatorTrackingControl` is involved — fingers aren't IK-held on
+Desktop, so plain muscle animation on the Gesture layer just works.
 
 ### Why head pose lives on the Gesture layer, not FX
 
