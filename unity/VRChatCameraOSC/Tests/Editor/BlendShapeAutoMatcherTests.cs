@@ -146,6 +146,33 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         }
 
         [Test]
+        public void OptionalExtras_MatchTheirRegions_AndRespectGuards()
+        {
+            // Issue #24 additions: cheek puff, jaw sideways, pucker/funnel,
+            // frown, sneer, and the eye-wide pseudo-params.
+            var body = MakeRenderer(
+                "Body",
+                "Cheek_Puff", "Jaw_Left", "Jaw_Right",
+                "Mouth_U", "Mouth_O", "Mouth_Frown_L", "Nose_Sneer_L",
+                "Eye_Wide_L", "eyelid_inner_wide");
+
+            Assert.AreEqual("Cheek_Puff", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/CheekPuffLeft"));
+            Assert.AreEqual("Jaw_Left", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/JawLeft"));
+            Assert.AreEqual("Jaw_Right", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/JawRight"));
+            Assert.AreEqual("Mouth_U", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/LipPuckerUpperLeft"));
+            Assert.AreEqual("Mouth_O", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/LipFunnelUpperLeft"));
+            Assert.AreEqual("Mouth_Frown_L", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/MouthFrownLeft"));
+            Assert.AreEqual("Nose_Sneer_L", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/NoseSneerLeft"));
+            // Eye-wide pseudo-param: matches the eye shape, never the eyelid
+            // "inner wide" trap that once bit the mouth params.
+            Assert.AreEqual("Eye_Wide_L", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "EyeWideLeft"));
+
+            // Region guards: an eye shape must not satisfy cheek puff.
+            var eyesOnly = MakeRenderer("Body2", "eye_puff_l");
+            Assert.IsNull(BlendShapeAutoMatcher.FindBlendShapeForParam(eyesOnly, "v2/CheekPuffLeft"));
+        }
+
+        [Test]
         public void EyeLid_NeverMatchesEyebrowShapes()
         {
             // "eyebrow_wink_l" is a brow shape; the eyelid param must not grab it.

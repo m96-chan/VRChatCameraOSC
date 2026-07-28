@@ -64,11 +64,37 @@ namespace VRChatCameraOsc.AvatarSetup
             Transform avatarRoot,
             string paramName,
             SkinnedMeshRenderer renderer,
-            string blendShapeName)
+            string blendShapeName,
+            SkinnedMeshRenderer wideRenderer = null,
+            string wideBlendShapeName = null)
         {
             var tree = NewTree(controller, paramName, BlendTreeType.Simple1D);
-            tree.AddChild(BlendShapeClip(controller, avatarRoot, renderer, blendShapeName, BlendShapeFullWeight), 0f);
-            tree.AddChild(BlendShapeClip(controller, avatarRoot, renderer, blendShapeName, 0f), OscParameterSpec.EyeLidNeutral);
+            var hasWide = wideRenderer != null && !string.IsNullOrEmpty(wideBlendShapeName);
+            if (!hasWide)
+            {
+                tree.AddChild(BlendShapeClip(controller, avatarRoot, renderer, blendShapeName, BlendShapeFullWeight), 0f);
+                tree.AddChild(BlendShapeClip(controller, avatarRoot, renderer, blendShapeName, 0f), OscParameterSpec.EyeLidNeutral);
+            }
+            else
+            {
+                // With an eye-wide shape wired (issue #24), the 0.75..1 range
+                // stops clamping and drives it — zero extra parameter bits,
+                // since EyeLid already encodes wide above neutral. Every
+                // child animates BOTH curves so the blend never leaves one
+                // shape at an unanimated default mid-segment.
+                tree.AddChild(
+                    TwoBlendShapeClip(controller, avatarRoot, renderer, blendShapeName, BlendShapeFullWeight,
+                        wideRenderer, wideBlendShapeName, 0f),
+                    0f);
+                tree.AddChild(
+                    TwoBlendShapeClip(controller, avatarRoot, renderer, blendShapeName, 0f,
+                        wideRenderer, wideBlendShapeName, 0f),
+                    OscParameterSpec.EyeLidNeutral);
+                tree.AddChild(
+                    TwoBlendShapeClip(controller, avatarRoot, renderer, blendShapeName, 0f,
+                        wideRenderer, wideBlendShapeName, BlendShapeFullWeight),
+                    1f);
+            }
             AddLayer(controller, paramName, tree, AnimatorLayerBlendingMode.Override, null);
         }
 
@@ -78,20 +104,24 @@ namespace VRChatCameraOsc.AvatarSetup
         /// overriding it. <paramref name="muscleName"/> must be one of
         /// <see cref="HumanTrait.MuscleName"/> (e.g. "Head Nod Down-Up").
         ///
-        /// <paramref name="controller"/> must be the avatar's **Gesture**
-        /// playable-layer controller, not FX. Two documented VRChat facts
-        /// force this (creators.vrchat.com/avatars/playable-layers/,
+        /// <paramref name="controller"/> must be the avatar's **Additive**
+        /// playable-layer controller (issue #25), not FX or Gesture.
+        /// Documented VRChat facts force this
+        /// (creators.vrchat.com/avatars/playable-layers/,
         /// /avatars/state-behaviors/): (1) at avatar init the FX layer's
         /// default mask "disables all humanoid muscles", so a muscle-curve
         /// layer placed in FX is silently inert in the VRChat client even
-        /// though it rotates the head in the Unity editor; (2) the Head bone
-        /// is IK-driven on Desktop and only an Animator layer whose state
-        /// carries a <see cref="VRCAnimatorTrackingControl"/> with
+        /// though it rotates the head in the Unity editor; (2) on Gesture,
+        /// the first layer's avatar mask is AND-ed over the entire playable
+        /// layer, and stock hand-gesture setups carry vrc_HandsOnly there —
+        /// same silent-inert failure (observed live, issue #25). The
+        /// Additive playable layer is VRChat's documented home for additive
+        /// humanoid muscle animation on top of Base ("things like
+        /// breathing"), and it ignores the first layer's mask; (3) the Head
+        /// bone is IK-driven on Desktop and only an Animator layer whose
+        /// state carries a <see cref="VRCAnimatorTrackingControl"/> with
         /// <c>trackingHead = Animation</c> makes the Animator's own values
         /// win over that IK — which is why this method also attaches one.
-        /// The Gesture layer is VRChat's documented home for "animations
-        /// that need to act on individual body parts while still playing the
-        /// underlying animations for the rest of the body".
         /// </summary>
         public static void AddHeadPoseLayer(AnimatorController controller, string paramName, string muscleName)
         {
@@ -326,11 +356,45 @@ namespace VRChatCameraOsc.AvatarSetup
             float weight)
         {
             var clip = new AnimationClip { name = $"{renderer.name}_{blendShapeName}_{weight:0}".Replace('/', '_') };
+            SetBlendShapeCurve(clip, avatarRoot, renderer, blendShapeName, weight);
+            AssetDatabase.AddObjectToAsset(clip, controller);
+            return clip;
+        }
+
+        /// <summary>One clip animating two blend shapes (the EyeLid blink +
+        /// eye-wide pair) — Simple1D children must all animate the same
+        /// property set or Unity leaves the missing curve at its previous
+        /// value mid-blend.</summary>
+        static AnimationClip TwoBlendShapeClip(
+            AnimatorController controller,
+            Transform avatarRoot,
+            SkinnedMeshRenderer rendererA,
+            string shapeA,
+            float weightA,
+            SkinnedMeshRenderer rendererB,
+            string shapeB,
+            float weightB)
+        {
+            var clip = new AnimationClip
+            {
+                name = $"{rendererA.name}_{shapeA}_{weightA:0}_{shapeB}_{weightB:0}".Replace('/', '_'),
+            };
+            SetBlendShapeCurve(clip, avatarRoot, rendererA, shapeA, weightA);
+            SetBlendShapeCurve(clip, avatarRoot, rendererB, shapeB, weightB);
+            AssetDatabase.AddObjectToAsset(clip, controller);
+            return clip;
+        }
+
+        static void SetBlendShapeCurve(
+            AnimationClip clip,
+            Transform avatarRoot,
+            SkinnedMeshRenderer renderer,
+            string blendShapeName,
+            float weight)
+        {
             var path = AnimationUtility.CalculateTransformPath(renderer.transform, avatarRoot);
             var binding = EditorCurveBinding.FloatCurve(path, typeof(SkinnedMeshRenderer), "blendShape." + blendShapeName);
             AnimationUtility.SetEditorCurve(clip, binding, AnimationCurve.Constant(0f, 0f, weight));
-            AssetDatabase.AddObjectToAsset(clip, controller);
-            return clip;
         }
 
         // Additive layers subtract each clip's own value at time 0 as its

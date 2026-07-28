@@ -35,6 +35,7 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             mesh.triangles = new[] { 0, 1, 2 };
             mesh.AddBlendShapeFrame("Smile", 100f, new Vector3[3], null, null);
             mesh.AddBlendShapeFrame("Blink", 100f, new Vector3[3], null, null);
+            mesh.AddBlendShapeFrame("Wide", 100f, new Vector3[3], null, null);
             _renderer.sharedMesh = mesh;
         }
 
@@ -117,6 +118,31 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             // (param = neutral) the weight-0 clip. Clip naming encodes weight.
             StringAssert.EndsWith("_100", tree.children[0].motion.name);
             StringAssert.EndsWith("_0", tree.children[1].motion.name);
+        }
+
+        [Test]
+        public void AddEyeLidLayer_WithWideShape_DrivesItOverTheUpperSegment()
+        {
+            // Issue #24: an optional eye-wide shape rides the 0.75..1 range
+            // the two-child tree previously clamped — no extra parameters.
+            OscAnimatorLayerBuilder.AddEyeLidLayer(
+                _controller, _avatarRoot.transform, "v2/EyeLidLeft", _renderer, "Blink", _renderer, "Wide");
+
+            var layer = _controller.layers.First(l => l.name == "OSC_v2_EyeLidLeft");
+            var tree = (BlendTree)layer.stateMachine.states.Single().state.motion;
+            Assert.AreEqual(3, tree.children.Length);
+            CollectionAssert.AreEqual(
+                new[] { 0f, OscParameterSpec.EyeLidNeutral, 1f },
+                tree.children.Select(c => c.threshold).ToArray());
+            // Every child animates both curves (blink AND wide), so the
+            // blend never leaves one shape at an unanimated default.
+            foreach (var child in tree.children)
+            {
+                var bindings = AnimationUtility.GetCurveBindings((AnimationClip)child.motion)
+                    .Select(b => b.propertyName).ToArray();
+                CollectionAssert.AreEquivalent(
+                    new[] { "blendShape.Blink", "blendShape.Wide" }, bindings);
+            }
         }
 
         [Test]

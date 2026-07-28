@@ -256,7 +256,11 @@ Expression Parameters and the FX/Gesture Animator Controller layers for you:
 | `v2/JawOpen` | `0..1` | mouth opening amount |
 | `v2/MouthSmileLeft`, `v2/MouthSmileRight` | `0..1` | mouth-corner lift (smile) |
 | `v2/MouthStretchLeft`, `v2/MouthStretchRight` | `0..1` | mouth-corner horizontal stretch (wide/grin) |
-| `v2/Head/Yaw`, `v2/Head/Pitch`, `v2/Head/Roll` | `-1..1` | head turn / nod / tilt (Humanoid head bone, additive layer) |
+| `v2/Head/Yaw`, `v2/Head/Pitch`, `v2/Head/Roll` | `-1..1` | head turn / nod / tilt (Humanoid head bone, Additive playable layer) |
+
+Plus optional extras declared only when wired (issue #24): cheek puff,
+sideways jaw, pucker, funnel, frown, nose sneer, and an eye-wide shape on
+the `v2/EyeLid*` upper range — see [`unity/README.md`](unity/README.md).
 
 Because these are the standard VRCFT names, a wizard-made avatar also works
 with VRCFaceTracking itself, and the tracker's avatar-aware gating sends

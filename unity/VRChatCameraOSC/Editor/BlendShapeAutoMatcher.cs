@@ -30,6 +30,19 @@ namespace VRChatCameraOsc.AvatarSetup
             ["v2/MouthSmileRight"] = new[] { "smile_r", "mouth_smile_r", "smileright" },
             ["v2/MouthStretchLeft"] = new[] { "wide_l", "mouth_wide_l", "stretch_l" },
             ["v2/MouthStretchRight"] = new[] { "wide_r", "mouth_wide_r", "stretch_r" },
+            // ---- Optional extras (issue #24) ----
+            ["v2/CheekPuffLeft"] = new[] { "cheek_puff_l", "puff_l" },
+            ["v2/CheekPuffRight"] = new[] { "cheek_puff_r", "puff_r" },
+            ["v2/JawLeft"] = new[] { "jaw_left", "jaw_l", "mouth_left", "mouthleft", "口左" },
+            ["v2/JawRight"] = new[] { "jaw_right", "jaw_r", "mouth_right", "mouthright", "口右" },
+            ["v2/MouthFrownLeft"] = new[] { "frown_l", "mouth_down_l", "sad_l" },
+            ["v2/MouthFrownRight"] = new[] { "frown_r", "mouth_down_r", "sad_r" },
+            ["v2/NoseSneerLeft"] = new[] { "sneer_l", "nose_sneer_l" },
+            ["v2/NoseSneerRight"] = new[] { "sneer_r", "nose_sneer_r" },
+            // Pseudo-params: the optional eye-wide picker on the v2/EyeLid*
+            // layers (no OSC parameter of their own — issue #24).
+            ["EyeWideLeft"] = new[] { "eye_wide_l", "eyewide_l", "wide_eye_l" },
+            ["EyeWideRight"] = new[] { "eye_wide_r", "eyewide_r", "wide_eye_r" },
         };
 
         /// <summary>Fallback keywords for parameters that often only exist as
@@ -43,6 +56,18 @@ namespace VRChatCameraOsc.AvatarSetup
             ["v2/MouthSmileRight"] = new[] { "smile", "mouth_smile", "fcl_mth_fun", "happy" },
             ["v2/MouthStretchLeft"] = new[] { "wide", "mouth_wide", "grin" },
             ["v2/MouthStretchRight"] = new[] { "wide", "mouth_wide", "grin" },
+            ["v2/CheekPuffLeft"] = new[] { "cheek_puff", "cheekpuff", "puff", "fcl_che_fung", "ほっぺ", "頬" },
+            ["v2/CheekPuffRight"] = new[] { "cheek_puff", "cheekpuff", "puff", "fcl_che_fung", "ほっぺ", "頬" },
+            ["v2/LipPuckerUpperLeft"] = new[] { "pucker", "kiss", "mouth_u", "fcl_mth_u", "う" },
+            ["v2/LipPuckerUpperRight"] = new[] { "pucker", "kiss", "mouth_u", "fcl_mth_u", "う" },
+            ["v2/LipFunnelUpperLeft"] = new[] { "funnel", "mouth_o", "fcl_mth_o", "お" },
+            ["v2/LipFunnelUpperRight"] = new[] { "funnel", "mouth_o", "fcl_mth_o", "お" },
+            ["v2/MouthFrownLeft"] = new[] { "frown", "mouth_down", "fcl_mth_down", "sad", "悲" },
+            ["v2/MouthFrownRight"] = new[] { "frown", "mouth_down", "fcl_mth_down", "sad", "悲" },
+            ["v2/NoseSneerLeft"] = new[] { "sneer", "nose_sneer" },
+            ["v2/NoseSneerRight"] = new[] { "sneer", "nose_sneer" },
+            ["EyeWideLeft"] = new[] { "eye_wide", "eyewide", "surprised", "びっくり", "見開" },
+            ["EyeWideRight"] = new[] { "eye_wide", "eyewide", "surprised", "びっくり", "見開" },
         };
 
         /// <summary>
@@ -58,20 +83,33 @@ namespace VRChatCameraOsc.AvatarSetup
         static readonly string[] EyeForbidden = { "mouth", "kuchi", "lip", "brow", "mayu", "cheek", "hoho" };
         static readonly string[] BrowForbidden = { "mouth", "kuchi", "lip", "blink", "cheek", "hoho" };
 
+        static readonly string[] CheekForbidden = { "eye", "lid", "blink", "brow", "mayu", "mouth", "kuchi", "lip", "nose" };
+        static readonly string[] NoseForbidden = { "eye", "lid", "blink", "brow", "mayu", "mouth", "kuchi", "lip", "cheek", "hoho" };
+
         static string[] ForbiddenFor(string paramName)
         {
             if (paramName.StartsWith("v2/Mouth", StringComparison.Ordinal) ||
-                paramName.StartsWith("v2/Jaw", StringComparison.Ordinal))
+                paramName.StartsWith("v2/Jaw", StringComparison.Ordinal) ||
+                paramName.StartsWith("v2/Lip", StringComparison.Ordinal))
             {
                 return MouthForbidden;
             }
-            if (paramName.StartsWith("v2/EyeLid", StringComparison.Ordinal))
+            if (paramName.StartsWith("v2/EyeLid", StringComparison.Ordinal) ||
+                paramName.StartsWith("EyeWide", StringComparison.Ordinal))
             {
                 return EyeForbidden;
             }
             if (paramName.StartsWith("v2/BrowUp", StringComparison.Ordinal))
             {
                 return BrowForbidden;
+            }
+            if (paramName.StartsWith("v2/CheekPuff", StringComparison.Ordinal))
+            {
+                return CheekForbidden;
+            }
+            if (paramName.StartsWith("v2/NoseSneer", StringComparison.Ordinal))
+            {
+                return NoseForbidden;
             }
             return Array.Empty<string>();
         }
@@ -139,15 +177,19 @@ namespace VRChatCameraOsc.AvatarSetup
         /// the parameter's face-region guard applied.</summary>
         public static string FindBlendShapeForParam(SkinnedMeshRenderer renderer, string paramName)
         {
-            if (!Keywords.TryGetValue(paramName, out var keywords))
-            {
-                return null;
-            }
             var forbidden = ForbiddenFor(paramName);
-            return FindBlendShape(renderer, keywords, forbidden)
-                ?? (SharedFallback.TryGetValue(paramName, out var fallback)
-                    ? FindBlendShape(renderer, fallback, forbidden)
-                    : null);
+            string result = null;
+            if (Keywords.TryGetValue(paramName, out var keywords))
+            {
+                result = FindBlendShape(renderer, keywords, forbidden);
+            }
+            // Some params (e.g. pucker/funnel) only have shared, non-L/R
+            // keywords — the fallback must apply even with no primary entry.
+            if (result == null && SharedFallback.TryGetValue(paramName, out var fallback))
+            {
+                result = FindBlendShape(renderer, fallback, forbidden);
+            }
+            return result;
         }
 
         static string Normalise(string name) => name.ToLowerInvariant().Replace(' ', '_').Replace('-', '_');

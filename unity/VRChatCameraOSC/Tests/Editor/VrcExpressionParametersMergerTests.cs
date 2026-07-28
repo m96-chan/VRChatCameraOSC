@@ -110,6 +110,22 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         }
 
         [Test]
+        public void SpecsToDeclare_IncludesCoreAlways_OptionalsOnlyWhenWired()
+        {
+            // Issue #24: unwired optional extras must not be declared (they
+            // would cost expression-parameter bits for nothing).
+            var none = AvatarSetupWindow.SpecsToDeclare(new string[0]);
+            CollectionAssert.AreEquivalent(
+                OscParameterSpec.Core.Select(s => s.Name).ToArray(),
+                none.Select(s => s.Name).ToArray());
+
+            var withPuff = AvatarSetupWindow.SpecsToDeclare(new[] { "v2/CheekPuffLeft", "v2/JawOpen" });
+            Assert.IsTrue(withPuff.Any(s => s.Name == "v2/CheekPuffLeft"));
+            Assert.IsFalse(withPuff.Any(s => s.Name == "v2/CheekPuffRight"));
+            Assert.AreEqual(OscParameterSpec.Core.Count() + 1, withPuff.Count);
+        }
+
+        [Test]
         public void RemoveByName_StripsLegacyCustom10Parameters_LeavesTheRestAlone()
         {
             // Migration path (issue #21): an avatar set up by the pre-#21

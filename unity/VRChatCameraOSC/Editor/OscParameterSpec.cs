@@ -41,16 +41,22 @@ namespace VRChatCameraOsc.AvatarSetup
         /// approach 1.0 — measured live for the brows (issue #23: a
         /// deliberate raise peaks at ~0.3–0.5 on the wire).</summary>
         public readonly float FullScale;
+        /// <summary>Optional parameters are only declared (and only cost VRC
+        /// expression-parameter bits) when the user actually wires a blend
+        /// shape to them — the core set is always declared (issue #24).</summary>
+        public readonly bool Optional;
         public readonly OscParamKind Kind;
 
         public OscParamSpec(
-            string name, float min, float max, float defaultValue, OscParamKind kind, float fullScale = 0f)
+            string name, float min, float max, float defaultValue, OscParamKind kind,
+            float fullScale = 0f, bool optional = false)
         {
             Name = name;
             Min = min;
             Max = max;
             DefaultValue = defaultValue;
             FullScale = fullScale > 0f ? fullScale : max;
+            Optional = optional;
             Kind = kind;
         }
     }
@@ -86,7 +92,38 @@ namespace VRChatCameraOsc.AvatarSetup
             new OscParamSpec("v2/Head/Yaw", -1f, 1f, 0f, OscParamKind.HeadPose),
             new OscParamSpec("v2/Head/Pitch", -1f, 1f, 0f, OscParamKind.HeadPose),
             new OscParamSpec("v2/Head/Roll", -1f, 1f, 0f, OscParamKind.HeadPose),
+            // ---- Optional extras (issue #24): declared only when wired, so
+            // they cost expression-parameter bits only on avatars that have
+            // the shapes. All are ARKit-52-drivable and already emitted by
+            // the tracker (src/mapping/unified.rs). ----
+            new OscParamSpec("v2/CheekPuffLeft", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
+            new OscParamSpec("v2/CheekPuffRight", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
+            new OscParamSpec("v2/JawLeft", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
+            new OscParamSpec("v2/JawRight", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
+            new OscParamSpec("v2/LipPuckerUpperLeft", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
+            new OscParamSpec("v2/LipPuckerUpperRight", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
+            new OscParamSpec("v2/LipFunnelUpperLeft", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
+            new OscParamSpec("v2/LipFunnelUpperRight", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
+            new OscParamSpec("v2/MouthFrownLeft", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
+            new OscParamSpec("v2/MouthFrownRight", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
+            new OscParamSpec("v2/NoseSneerLeft", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
+            new OscParamSpec("v2/NoseSneerRight", 0f, 1f, 0f, OscParamKind.BlendShape, optional: true),
         };
+
+        /// <summary>The always-declared subset (`Optional == false`).</summary>
+        public static System.Collections.Generic.IEnumerable<OscParamSpec> Core
+        {
+            get
+            {
+                foreach (var s in All)
+                {
+                    if (!s.Optional)
+                    {
+                        yield return s;
+                    }
+                }
+            }
+        }
 
         /// <summary>The retired custom10 parameter names (pre-issue-#21).
         /// Applying or removing the wizard also cleans these off an avatar

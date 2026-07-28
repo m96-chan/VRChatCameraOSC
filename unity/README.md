@@ -42,7 +42,20 @@ mirroring `src/mapping/unified.rs`):
 | `v2/JawOpen` | `0..1` | 0 | mouth-open shape |
 | `v2/MouthSmileLeft` / `v2/MouthSmileRight` | `0..1` | 0 | smile shape (shared shape OK) |
 | `v2/MouthStretchLeft` / `v2/MouthStretchRight` | `0..1` | 0 | mouth-widen shape (shared shape OK) |
-| `v2/Head/Yaw` / `v2/Head/Pitch` / `v2/Head/Roll` | `-1..1` | 0 | Humanoid head muscles (additive Gesture layer) |
+| `v2/Head/Yaw` / `v2/Head/Pitch` / `v2/Head/Roll` | `-1..1` | 0 | Humanoid head muscles (**Additive playable layer** — issue #25) |
+
+Plus **optional extras** (issue #24) — declared (and costing expression
+parameter bits) **only when you wire a blend shape** to them:
+
+| Optional parameter(s) | Drives |
+|---|---|
+| `v2/CheekPuffLeft` / `Right` | cheek puff (ぷくー) |
+| `v2/JawLeft` / `v2/JawRight` | sideways jaw / mouth shift |
+| `v2/LipPuckerUpperLeft` / `Right` | pucker (う) |
+| `v2/LipFunnelUpperLeft` / `Right` | funnel (お) |
+| `v2/MouthFrownLeft` / `Right` | frown / sad mouth |
+| `v2/NoseSneerLeft` / `Right` | nose sneer |
+| *(eye-wide picker on `v2/EyeLid*`)* | eye-wide shape over the 0.75..1 segment — **no extra parameter bits** |
 
 The `v2/EyeLid*` **0.75 default** matters: with the inverted VRCFT eyelid
 semantics, a 0 default would leave the avatar's eyes shut whenever no tracker
