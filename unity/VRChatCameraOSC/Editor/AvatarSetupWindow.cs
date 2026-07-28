@@ -309,6 +309,14 @@ namespace VRChatCameraOsc.AvatarSetup
                 }
             }
 
+            if (gestureController != null)
+            {
+                // Without this the head layers are inert in the VRChat client
+                // (first-layer mask ANDs over the whole playable layer) —
+                // issue #25.
+                EnsureGestureMaskAllowsHead(_avatar, gestureController);
+            }
+
             var disabledEyelids = false;
             if (_disableNativeEyelids &&
                 (_positiveRenderer.ContainsKey("v2/EyeLidLeft") || _positiveRenderer.ContainsKey("v2/EyeLidRight")) &&
@@ -381,6 +389,7 @@ namespace VRChatCameraOsc.AvatarSetup
                         removedLayers++;
                     }
                 }
+                RestoreGestureMask(_avatar, gestureController);
                 EditorUtility.SetDirty(gestureController);
             }
             if (controller != null)
@@ -400,6 +409,121 @@ namespace VRChatCameraOsc.AvatarSetup
                 "VRChatCameraOSC Setup",
                 $"Removed {removedParams} expression parameter(s) and {removedLayers} Animator layer(s).",
                 "OK");
+        }
+
+        /// <summary>Name of the combined (original-parts + Head) first-layer
+        /// Gesture mask this wizard swaps in — see
+        /// <see cref="EnsureGestureMaskAllowsHead"/> (issue #25).</summary>
+        internal const string GestureMaskName = "OSC_GestureMask";
+
+        /// <summary>
+        /// VRChat ANDs the Gesture controller's <b>first layer's</b> avatar
+        /// mask over the entire Gesture playable layer (community-documented:
+        /// vrc.school "Avatar Masks", vrclibrary.com; there is a VRChat
+        /// feedback ticket asking for per-layer masks). The stock hand-gesture
+        /// setups put <c>vrc_HandsOnly</c> there, which denies Head — so the
+        /// head-pose layers play in the Unity editor preview but are silently
+        /// inert in the VRChat client (issue #25, observed live).
+        ///
+        /// When the first-layer mask denies Head, swap in a combined mask:
+        /// a copy of the original's humanoid parts + transforms with Head
+        /// enabled, stored as a sub-asset of the gesture controller. The hand
+        /// layers keep their own hand masks, so the AND still restricts them
+        /// to hands. The descriptor's Gesture slot mask is pointed at the
+        /// same combined mask (the SDK inspector mirrors the first sub-layer
+        /// there, and VRChat reads it too). No-op when Head is already
+        /// allowed or there is no first-layer mask (nothing denied).
+        /// </summary>
+        internal static void EnsureGestureMaskAllowsHead(VRCAvatarDescriptor avatar, AnimatorController gesture)
+        {
+            var layers = gesture.layers;
+            if (layers.Length == 0)
+            {
+                return;
+            }
+            var original = layers[0].avatarMask;
+            if (original == null || original.GetHumanoidBodyPartActive(AvatarMaskBodyPart.Head))
+            {
+                return;
+            }
+
+            var combined = AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(gesture))
+                .OfType<AvatarMask>()
+                .FirstOrDefault(m => m.name == GestureMaskName);
+            if (combined == null)
+            {
+                combined = new AvatarMask { name = GestureMaskName };
+                for (var part = AvatarMaskBodyPart.Root; part < AvatarMaskBodyPart.LastBodyPart; part++)
+                {
+                    combined.SetHumanoidBodyPartActive(
+                        part,
+                        part == AvatarMaskBodyPart.Head || original.GetHumanoidBodyPartActive(part));
+                }
+                combined.transformCount = original.transformCount;
+                for (var i = 0; i < original.transformCount; i++)
+                {
+                    combined.SetTransformPath(i, original.GetTransformPath(i));
+                    combined.SetTransformActive(i, original.GetTransformActive(i));
+                }
+                AssetDatabase.AddObjectToAsset(combined, gesture);
+            }
+
+            layers[0].avatarMask = combined;
+            gesture.layers = layers;
+            SetDescriptorGestureMask(avatar, combined);
+        }
+
+        /// <summary>
+        /// Inverse of <see cref="EnsureGestureMaskAllowsHead"/> for the
+        /// wizard's Remove path: if the first-layer mask is the wizard's
+        /// combined mask, swap the stock <c>vrc_HandsOnly</c> back in (found
+        /// by asset name, like the stock hands controller; null if the
+        /// project doesn't have it) and delete the combined sub-asset.
+        /// Restores by <em>equivalence</em>, not identity — an avatar whose
+        /// original first-layer mask was something other than vrc_HandsOnly
+        /// gets the stock mask instead (documented caveat, issue #25).
+        /// </summary>
+        internal static void RestoreGestureMask(VRCAvatarDescriptor avatar, AnimatorController gesture)
+        {
+            var layers = gesture.layers;
+            if (layers.Length == 0 || layers[0].avatarMask == null ||
+                layers[0].avatarMask.name != GestureMaskName)
+            {
+                return;
+            }
+            var ours = layers[0].avatarMask;
+
+            AvatarMask stock = null;
+            foreach (var guid in AssetDatabase.FindAssets("vrc_HandsOnly t:AvatarMask"))
+            {
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                if (Path.GetFileNameWithoutExtension(path) == "vrc_HandsOnly")
+                {
+                    stock = AssetDatabase.LoadAssetAtPath<AvatarMask>(path);
+                    break;
+                }
+            }
+
+            layers[0].avatarMask = stock;
+            gesture.layers = layers;
+            SetDescriptorGestureMask(avatar, stock);
+
+            AssetDatabase.RemoveObjectFromAsset(ours);
+            Object.DestroyImmediate(ours, true);
+        }
+
+        static void SetDescriptorGestureMask(VRCAvatarDescriptor avatar, AvatarMask mask)
+        {
+            var layers = avatar.baseAnimationLayers;
+            var gestureIndex = System.Array.FindIndex(layers, l => l.type == VRCAvatarDescriptor.AnimLayerType.Gesture);
+            if (gestureIndex < 0)
+            {
+                return;
+            }
+            Undo.RecordObject(avatar, "Update VRChatCameraOSC Gesture layer mask");
+            layers[gestureIndex].mask = mask;
+            avatar.baseAnimationLayers = layers;
+            EditorUtility.SetDirty(avatar);
         }
 
         /// <summary>
