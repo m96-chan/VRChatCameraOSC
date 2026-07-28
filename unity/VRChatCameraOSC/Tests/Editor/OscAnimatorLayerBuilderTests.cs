@@ -161,123 +161,92 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         }
 
         [Test]
-        public void AddHeadPoseLayer_UsesOverrideBlending_WithExplicitThresholds()
+        public void AddCombinedHeadLayer_OneOverrideLayer_NestedThreeAxisTree()
         {
-            // Override + constant clips (issue #25 third attempt): the
-            // additive + t=0-ramp variant produced zero head motion in the
-            // VRChat client; emotes prove plain muscle clips + tracking
-            // control do work.
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
+            // Issue #27: per-axis Override layers group-override each other
+            // in-client (the last layer pinned yaw/pitch to 0). All three
+            // muscles must be written by ONE layer's tree.
+            OscAnimatorLayerBuilder.AddCombinedHeadLayer(_controller);
 
-            var layer = _controller.layers.First(l => l.name == "OSC_v2_Head_Roll");
-            Assert.AreEqual(AnimatorLayerBlendingMode.Override, layer.blendingMode);
-            Assert.IsTrue(_controller.parameters.Any(p => p.name == "v2/Head/Roll"));
-
-            // Ping-pong loop (issue #25 attempts 5-6): both states carry the
-            // motion and the tracking control, cycling on exit time so
-            // Head = Animation is re-asserted continuously — the client
-            // misses behaviours on the initial state at load AND resets
-            // tracking after its own events (jump/landing), both live-confirmed.
-            Assert.AreEqual(2, layer.stateMachine.states.Length);
-            Assert.AreEqual("OSC_v2_Head_Roll", layer.stateMachine.defaultState.name);
-            var forward = layer.stateMachine.states
-                .Single(s => s.state.name == "OSC_v2_Head_Roll").state.transitions.Single();
-            Assert.IsTrue(forward.hasExitTime);
-            Assert.AreEqual("OSC_v2_Head_Roll_Loop", forward.destinationState.name);
-            var back = layer.stateMachine.states
-                .Single(s => s.state.name == "OSC_v2_Head_Roll_Loop").state.transitions.Single();
-            Assert.AreEqual("OSC_v2_Head_Roll", back.destinationState.name);
-            // The loop twin must drive the same motion and carry the same
-            // behaviour, or half of each cycle would freeze the head.
-            var loopState = layer.stateMachine.states
-                .Single(s => s.state.name == "OSC_v2_Head_Roll_Loop").state;
-            Assert.IsNotNull(loopState.motion);
-            Assert.AreEqual(1, loopState.behaviours.OfType<VRCAnimatorTrackingControl>().Count());
-
-            // Muscle clips need REAL length or normalized time never
-            // advances and the exit-time ping-pong never fires
-            // (live-confirmed: jump froze the head permanently, issue #25).
-            var headTree = (BlendTree)layer.stateMachine.defaultState.motion;
-            foreach (var child in headTree.children)
+            foreach (var p in new[] { "v2/Head/Yaw", "v2/Head/Pitch", "v2/Head/Roll" })
             {
-                Assert.Greater(((AnimationClip)child.motion).length, 0.5f,
-                    $"{child.motion.name} must have real duration");
+                Assert.IsTrue(_controller.parameters.Any(x => x.name == p), p);
             }
+            var layer = _controller.layers.Single(l => l.name.StartsWith("OSC_v2_Head"));
+            Assert.AreEqual("OSC_v2_Head", layer.name);
+            Assert.AreEqual(AnimatorLayerBlendingMode.Override, layer.blendingMode);
 
-            // Guard against useAutomaticThresholds rewriting the -1/0/1
-            // spread (same failure mode the eyelid tree hit — issue #21).
-            var tree = (BlendTree)layer.stateMachine.states
-                .Single(s => s.state.name == "OSC_v2_Head_Roll").state.motion;
-            Assert.IsFalse(tree.useAutomaticThresholds);
-            CollectionAssert.AreEqual(
-                new[] { -1f, 0f, 1f },
-                tree.children.Select(c => c.threshold).ToArray());
+            var top = (BlendTree)layer.stateMachine.defaultState.motion;
+            Assert.AreEqual("v2/Head/Yaw", top.blendParameter);
+            Assert.IsFalse(top.useAutomaticThresholds);
+            CollectionAssert.AreEqual(new[] { -1f, 0f, 1f }, top.children.Select(c => c.threshold).ToArray());
+            var mid = (BlendTree)top.children[2].motion;
+            Assert.AreEqual("v2/Head/Pitch", mid.blendParameter);
+            var leafTree = (BlendTree)mid.children[0].motion;
+            Assert.AreEqual("v2/Head/Roll", leafTree.blendParameter);
+            // Every leaf clip animates ALL THREE muscles with real duration
+            // (group-override then always carries all axes; real length keeps
+            // the ping-pong clock ticking).
+            var clip = (AnimationClip)leafTree.children[1].motion;
+            var muscles = AnimationUtility.GetCurveBindings(clip).Select(b => b.propertyName).ToArray();
+            CollectionAssert.AreEquivalent(
+                new[] { "Head Turn Left-Right", "Head Nod Down-Up", "Head Tilt Left-Right" }, muscles);
+            Assert.Greater(clip.length, 0.5f);
+            // Leaf values encode the branch: y=+1, p=-1, r=0 for this path.
+            float ValueOf(string muscle) => AnimationUtility.GetEditorCurve(
+                clip, AnimationUtility.GetCurveBindings(clip).Single(b => b.propertyName == muscle)).Evaluate(0f);
+            Assert.AreEqual(1f, ValueOf("Head Turn Left-Right"), 1e-6f);
+            Assert.AreEqual(-1f, ValueOf("Head Nod Down-Up"), 1e-6f);
+            Assert.AreEqual(0f, ValueOf("Head Tilt Left-Right"), 1e-6f);
         }
 
         [Test]
-        public void AddHeadPoseLayer_RestrictsToHeadOnlyMask_ToStopChestBonePerturbationLeaking()
+        public void AddCombinedHeadLayer_PingPongStates_EachCarryTrackingControlAndMotion()
+        {
+            OscAnimatorLayerBuilder.AddCombinedHeadLayer(_controller);
+
+            var layer = _controller.layers.Single(l => l.name == "OSC_v2_Head");
+            Assert.AreEqual(2, layer.stateMachine.states.Length);
+            foreach (var child in layer.stateMachine.states)
+            {
+                Assert.IsNotNull(child.state.motion, child.state.name);
+                var b = child.state.behaviours.OfType<VRCAnimatorTrackingControl>().Single();
+                Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.Animation, b.trackingHead);
+                Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, b.trackingLeftHand);
+                Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, b.trackingEyes);
+                Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, b.trackingMouth);
+                var tr = child.state.transitions.Single();
+                Assert.IsTrue(tr.hasExitTime);
+            }
+        }
+
+        [Test]
+        public void AddCombinedHeadLayer_RestrictsToHeadOnlyMask()
         {
             // Real bug (issue #16): Humanoid retargeting can leak tiny
-            // perturbations into Chest/Spine from a Head-only muscle clip,
-            // which a chest-mounted VRCPhysBone (e.g. wings) can amplify into
-            // a visible spin under real (continuous, jittery) OSC head data
-            // even though a single static parameter scrub looks harmless.
-            // The mask must contain the layer's effect to Head only.
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
+            // perturbations into Chest/Spine from Head-only muscle clips —
+            // a chest-mounted VRCPhysBone amplifies that into visible spin.
+            OscAnimatorLayerBuilder.AddCombinedHeadLayer(_controller);
 
-            var layer = _controller.layers.First(l => l.name == "OSC_v2_Head_Roll");
-            Assert.IsNotNull(layer.avatarMask, "head-pose layer must have a mask");
+            var layer = _controller.layers.Single(l => l.name == "OSC_v2_Head");
+            Assert.IsNotNull(layer.avatarMask);
             Assert.IsTrue(layer.avatarMask.GetHumanoidBodyPartActive(AvatarMaskBodyPart.Head));
             Assert.IsFalse(layer.avatarMask.GetHumanoidBodyPartActive(AvatarMaskBodyPart.Body));
             Assert.IsFalse(layer.avatarMask.GetHumanoidBodyPartActive(AvatarMaskBodyPart.LeftArm));
-            Assert.IsFalse(layer.avatarMask.GetHumanoidBodyPartActive(AvatarMaskBodyPart.RightArm));
-            Assert.IsFalse(layer.avatarMask.GetHumanoidBodyPartActive(AvatarMaskBodyPart.LeftLeg));
-            Assert.IsFalse(layer.avatarMask.GetHumanoidBodyPartActive(AvatarMaskBodyPart.RightLeg));
         }
 
         [Test]
-        public void AddHeadPoseLayer_SharesOneMaskAcrossAllThreeAxes()
+        public void RemoveLayer_CombinedHeadLayer_CleansTrackingControlsMaskAndNestedTrees()
         {
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Yaw", "Head Turn Left-Right");
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Pitch", "Head Nod Down-Up");
+            OscAnimatorLayerBuilder.AddCombinedHeadLayer(_controller);
 
-            var masks = _controller.layers
-                .Where(l => l.name.StartsWith("OSC_v2_Head"))
-                .Select(l => l.avatarMask)
-                .ToArray();
-            Assert.AreEqual(3, masks.Length);
-            Assert.AreSame(masks[0], masks[1]);
-            Assert.AreSame(masks[1], masks[2]);
-        }
+            Assert.IsTrue(OscAnimatorLayerBuilder.RemoveLayer(_controller, OscAnimatorLayerBuilder.CombinedHeadKey));
+            Assert.IsFalse(OscAnimatorLayerBuilder.HasLayer(_controller, OscAnimatorLayerBuilder.CombinedHeadKey));
 
-        [Test]
-        public void AddHeadPoseLayer_AttachesExactlyOneTrackingControl_HeadAnimationOthersNoChange()
-        {
-            // VRChat fact (creators.vrchat.com/avatars/state-behaviors/): the
-            // Head bone is IK-driven on Desktop; only a
-            // VRCAnimatorTrackingControl with trackingHead = Animation makes
-            // this layer's muscle curves win. Every other tracked part must
-            // stay NoChange so this layer never stomps on hands/eyes/etc.
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
-
-            var layer = _controller.layers.First(l => l.name == "OSC_v2_Head_Roll");
-            var state = layer.stateMachine.states
-                .Single(s => s.state.name == "OSC_v2_Head_Roll").state;
-            var behaviours = state.behaviours.OfType<VRCAnimatorTrackingControl>().ToArray();
-
-            Assert.AreEqual(1, behaviours.Length, "exactly one VRCAnimatorTrackingControl must be attached");
-            var behaviour = behaviours[0];
-            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.Animation, behaviour.trackingHead);
-            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, behaviour.trackingLeftHand);
-            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, behaviour.trackingRightHand);
-            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, behaviour.trackingHip);
-            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, behaviour.trackingLeftFoot);
-            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, behaviour.trackingRightFoot);
-            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, behaviour.trackingLeftFingers);
-            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, behaviour.trackingRightFingers);
-            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, behaviour.trackingEyes);
-            Assert.AreEqual(VRC_AnimatorTrackingControl.TrackingType.NoChange, behaviour.trackingMouth);
+            var assets = AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(_controller));
+            Assert.IsFalse(assets.OfType<VRCAnimatorTrackingControl>().Any(), "orphaned tracking control");
+            Assert.IsFalse(assets.OfType<AvatarMask>().Any(m => m.name == "OSC_HeadOnlyMask"), "orphaned mask");
+            Assert.IsFalse(assets.OfType<BlendTree>().Any(m => m.name.StartsWith("OSC_v2_Head")), "orphaned nested trees");
         }
 
         [Test]
@@ -290,43 +259,6 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             var layer = _controller.layers.First(l => l.name == "OSC_v2_JawOpen");
             var state = layer.stateMachine.states.Single().state;
             Assert.IsEmpty(state.behaviours);
-        }
-
-        [Test]
-        public void RemoveLayer_HeadPoseLayer_LeavesNoOrphanedTrackingControlAsset()
-        {
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
-
-            OscAnimatorLayerBuilder.RemoveLayer(_controller, "v2/Head/Roll");
-
-            var orphaned = AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(_controller))
-                .OfType<VRCAnimatorTrackingControl>()
-                .Any();
-            Assert.IsFalse(orphaned, "removing a head-pose layer must not leave a StateMachineBehaviour sub-asset behind");
-        }
-
-        [Test]
-        public void RemoveLayer_KeepsSharedMask_WhileOtherHeadLayersStillUseIt()
-        {
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Yaw", "Head Turn Left-Right");
-
-            OscAnimatorLayerBuilder.RemoveLayer(_controller, "v2/Head/Roll");
-
-            var remaining = _controller.layers.First(l => l.name == "OSC_v2_Head_Yaw");
-            Assert.IsNotNull(remaining.avatarMask, "surviving layer's mask must not have been destroyed");
-        }
-
-        [Test]
-        public void RemoveLayer_CleansUpSharedMask_OnceNoLayerReferencesIt()
-        {
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
-            OscAnimatorLayerBuilder.RemoveLayer(_controller, "v2/Head/Roll");
-
-            var maskStillInAsset = AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(_controller))
-                .OfType<AvatarMask>()
-                .Any(m => m.name == "OSC_HeadOnlyMask");
-            Assert.IsFalse(maskStillInAsset, "orphaned mask sub-asset must be cleaned up");
         }
 
         [Test]
@@ -363,15 +295,6 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         }
 
         [Test]
-        public void RemoveLayer_WorksForHeadPoseLayer()
-        {
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
-
-            Assert.IsTrue(OscAnimatorLayerBuilder.RemoveLayer(_controller, "v2/Head/Roll"));
-            Assert.IsFalse(OscAnimatorLayerBuilder.HasLayer(_controller, "v2/Head/Roll"));
-        }
-
-        [Test]
         public void RemoveLayer_LegacyCustom10Name_StillWorks_ForMigration()
         {
             // RemoveLegacyCustom10 (issue #21) relies on RemoveLayer working
@@ -396,10 +319,10 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
                         OscAnimatorLayerBuilder.AddEyeLidLayer(controller, root, spec.Name, renderer, "Blink");
                         break;
                     case OscParamKind.HeadPose:
-                        var muscle = spec.Name == "v2/Head/Roll" ? "Head Tilt Left-Right"
-                            : spec.Name == "v2/Head/Yaw" ? "Head Turn Left-Right"
-                            : "Head Nod Down-Up";
-                        OscAnimatorLayerBuilder.AddHeadPoseLayer(controller, spec.Name, muscle);
+                        if (!OscAnimatorLayerBuilder.HasLayer(controller, OscAnimatorLayerBuilder.CombinedHeadKey))
+                        {
+                            OscAnimatorLayerBuilder.AddCombinedHeadLayer(controller);
+                        }
                         break;
                 }
             }
@@ -413,12 +336,15 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             Assert.AreEqual(OscParameterSpec.All.Count, _controller.parameters.Length);
             // CreateAnimatorControllerAtPath seeds one default "Base Layer";
             // AddLayer only ever replaces layers it owns (named "OSC_*").
-            Assert.AreEqual(OscParameterSpec.All.Count, _controller.layers.Count(l => l.name.StartsWith("OSC_")));
+            // The three head axes share ONE combined layer (issue #27).
+            var headCount = OscParameterSpec.All.Count(s => s.Kind == OscParamKind.HeadPose);
+            Assert.AreEqual(
+                OscParameterSpec.All.Count - headCount + 1,
+                _controller.layers.Count(l => l.name.StartsWith("OSC_")));
             foreach (var spec in OscParameterSpec.All)
             {
-                Assert.IsTrue(
-                    OscAnimatorLayerBuilder.HasLayer(_controller, spec.Name),
-                    $"missing layer for {spec.Name}");
+                var key = spec.Kind == OscParamKind.HeadPose ? OscAnimatorLayerBuilder.CombinedHeadKey : spec.Name;
+                Assert.IsTrue(OscAnimatorLayerBuilder.HasLayer(_controller, key), $"missing layer for {spec.Name}");
             }
         }
 
@@ -427,9 +353,12 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         {
             WireAll(_controller, _avatarRoot.transform, _renderer);
 
-            foreach (var spec in OscParameterSpec.All)
+            var keys = OscParameterSpec.All
+                .Select(s => s.Kind == OscParamKind.HeadPose ? OscAnimatorLayerBuilder.CombinedHeadKey : s.Name)
+                .Distinct();
+            foreach (var key in keys)
             {
-                Assert.IsTrue(OscAnimatorLayerBuilder.RemoveLayer(_controller, spec.Name));
+                Assert.IsTrue(OscAnimatorLayerBuilder.RemoveLayer(_controller, key), key);
             }
 
             Assert.AreEqual(0, _controller.parameters.Length);

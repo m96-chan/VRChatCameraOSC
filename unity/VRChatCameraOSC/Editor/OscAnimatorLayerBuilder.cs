@@ -98,59 +98,117 @@ namespace VRChatCameraOsc.AvatarSetup
             AddLayer(controller, paramName, tree, AnimatorLayerBlendingMode.Override, null);
         }
 
-        /// <summary>
-        /// -1..1 parameter driving one Humanoid muscle via an additive layer,
-        /// so it composes with whatever else animates the avatar instead of
-        /// overriding it. <paramref name="muscleName"/> must be one of
-        /// <see cref="HumanTrait.MuscleName"/> (e.g. "Head Nod Down-Up").
-        ///
-        /// <paramref name="controller"/> must be the avatar's **Additive**
-        /// playable-layer controller (issue #25), not FX or Gesture.
-        /// Documented VRChat facts force this
-        /// (creators.vrchat.com/avatars/playable-layers/,
-        /// /avatars/state-behaviors/): (1) at avatar init the FX layer's
-        /// default mask "disables all humanoid muscles", so a muscle-curve
-        /// layer placed in FX is silently inert in the VRChat client even
-        /// though it rotates the head in the Unity editor; (2) on Gesture,
-        /// the first layer's avatar mask is AND-ed over the entire playable
-        /// layer, and stock hand-gesture setups carry vrc_HandsOnly there —
-        /// same silent-inert failure (observed live, issue #25). The
-        /// Additive playable layer is VRChat's documented home for additive
-        /// humanoid muscle animation on top of Base ("things like
-        /// breathing"), and it ignores the first layer's mask; (3) the Head
-        /// bone is IK-driven on Desktop and only an Animator layer whose
-        /// state carries a <see cref="VRCAnimatorTrackingControl"/> with
-        /// <c>trackingHead = Animation</c> makes the Animator's own values
-        /// win over that IK — which is why this method also attaches one.
-        /// </summary>
-        public static void AddHeadPoseLayer(AnimatorController controller, string paramName, string muscleName)
+        /// <summary>The combined head layer's pseudo-parameter key: used only
+        /// to derive the layer/asset name (<c>OSC_v2_Head</c>) for
+        /// <see cref="HasLayer"/>/<see cref="RemoveLayer"/>. The actual
+        /// Animator parameters are the three <c>v2/Head/*</c> floats.</summary>
+        public const string CombinedHeadKey = "v2/Head";
+
+        /// <summary>Humanoid muscle per head axis, in nesting order
+        /// (yaw outermost). Names verified against
+        /// <see cref="HumanTrait.MuscleName"/> (MuscleNameValidityTests).</summary>
+        static readonly (string param, string muscle)[] HeadAxes =
         {
-            var tree = NewTree(controller, paramName, BlendTreeType.Simple1D);
-            tree.AddChild(MuscleClip(controller, paramName, muscleName, -1f), -1f);
-            tree.AddChild(MuscleClip(controller, paramName, muscleName, 0f), 0f);
-            tree.AddChild(MuscleClip(controller, paramName, muscleName, 1f), 1f);
-            // Override, not Additive (issue #25 third attempt): additive
-            // animator layers derive each clip's reference pose from its t=0
-            // sample, which we compensated with a 1/60s 0→value ramp — that
-            // trick verifies in the editor but produced zero head motion in
-            // the VRChat client on both the Gesture and Additive playable
-            // layers, consistent with the client pinning state time at 0
-            // (ramp@t0 = 0 ⇒ additive delta identically 0). Emotes prove the
-            // client DOES honor plain muscle clips + TrackingControl on a
-            // head that Animation-releases from IK, so use plain Override
-            // blending with constant clips; the head-only AvatarMask keeps
-            // this layer from touching anything else.
-            //
-            // bufferEntryState (issue #25 attempts 5-6): VRChat misses State
-            // Behaviours on a layer's initial state at avatar load (confirmed
-            // live — the head only moved once the behaviour fired via a
-            // transition), and the client's own systems (jump/landing, emote
-            // exit) later reset tracking to Tracking, permanently freezing a
-            // fire-once design (also confirmed live). The state machine
-            // therefore ping-pongs between two identical states so the
-            // tracking control re-asserts Head = Animation continuously.
-            AddLayer(controller, paramName, tree, AnimatorLayerBlendingMode.Override,
+            ("v2/Head/Yaw", "Head Turn Left-Right"),
+            ("v2/Head/Pitch", "Head Nod Down-Up"),
+            ("v2/Head/Roll", "Head Tilt Left-Right"),
+        };
+
+        /// <summary>
+        /// ONE Override layer driving all three head axes through a nested
+        /// 3-axis blend tree (Yaw → Pitch → Roll Simple1D trees, 3×3×3 = 27
+        /// leaf clips each animating ALL three muscles).
+        ///
+        /// Why one layer (issue #27, observed live): Unity/VRChat compose
+        /// humanoid Override layers per masked muscle GROUP, not per muscle —
+        /// with one layer per axis, the last (Roll) layer overrode the whole
+        /// Head group with {tilt: value, turn: 0, nod: 0}: roll moved, yaw
+        /// and pitch were pinned straight ahead in-client (the editor blends
+        /// per-muscle and hides this). All three muscles must therefore be
+        /// written by the same layer, i.e. the same blend tree.
+        ///
+        /// <paramref name="controller"/> must be the avatar's **Gesture**
+        /// playable-layer controller with a first-layer mask that allows
+        /// Head (see AvatarSetupWindow.EnsureGestureMaskAllowsHead). The
+        /// placement/construction history — FX (masked out), Additive
+        /// playable layer (client-additive zeroes it), additive blending +
+        /// t=0 ramp (reference-pose delta 0), fire-once tracking control
+        /// (client resets on jump), zero-length clips (exit time never
+        /// reached) — is recorded in issues #25/#27. A
+        /// <see cref="VRCAnimatorTrackingControl"/> (Head = Animation) rides
+        /// the ping-pong states so the Animator keeps winning over Desktop
+        /// head IK.
+        /// </summary>
+        public static void AddCombinedHeadLayer(AnimatorController controller)
+        {
+            foreach (var (param, _) in HeadAxes)
+            {
+                EnsureFloatParameter(controller, param);
+            }
+
+            var top = new BlendTree
+            {
+                name = LayerNameFor(CombinedHeadKey),
+                blendType = BlendTreeType.Simple1D,
+                blendParameter = HeadAxes[0].param,
+                useAutomaticThresholds = false,
+            };
+            AssetDatabase.AddObjectToAsset(top, controller);
+            foreach (var yaw in new[] { -1f, 0f, 1f })
+            {
+                var mid = new BlendTree
+                {
+                    name = $"{LayerNameFor(CombinedHeadKey)}_y{yaw:0.#}",
+                    blendType = BlendTreeType.Simple1D,
+                    blendParameter = HeadAxes[1].param,
+                    useAutomaticThresholds = false,
+                };
+                AssetDatabase.AddObjectToAsset(mid, controller);
+                top.AddChild(mid, yaw);
+                foreach (var pitch in new[] { -1f, 0f, 1f })
+                {
+                    var leaf = new BlendTree
+                    {
+                        name = $"{LayerNameFor(CombinedHeadKey)}_y{yaw:0.#}_p{pitch:0.#}",
+                        blendType = BlendTreeType.Simple1D,
+                        blendParameter = HeadAxes[2].param,
+                        useAutomaticThresholds = false,
+                    };
+                    AssetDatabase.AddObjectToAsset(leaf, controller);
+                    mid.AddChild(leaf, pitch);
+                    foreach (var roll in new[] { -1f, 0f, 1f })
+                    {
+                        leaf.AddChild(HeadMuscleClip(controller, yaw, pitch, roll), roll);
+                    }
+                }
+            }
+
+            AddLayer(controller, CombinedHeadKey, top, AnimatorLayerBlendingMode.Override,
                 GetOrCreateHeadOnlyMask(controller), AddHeadTrackingControlBehaviour, bufferEntryState: true);
+        }
+
+        /// <summary>One leaf clip writing ALL THREE head muscles (flat
+        /// 1-second curves — real length keeps the ping-pong clock ticking,
+        /// see <see cref="MuscleClipSeconds"/>). Writing every muscle in
+        /// every leaf is the point: the whole-group override then always
+        /// carries all three blended values instead of defaults.</summary>
+        static AnimationClip HeadMuscleClip(AnimatorController controller, float yaw, float pitch, float roll)
+        {
+            var clip = new AnimationClip
+            {
+                name = $"{LayerNameFor(CombinedHeadKey)}_y{yaw:0.#}_p{pitch:0.#}_r{roll:0.#}",
+            };
+            var values = new[] { yaw, pitch, roll };
+            for (var i = 0; i < HeadAxes.Length; i++)
+            {
+                var binding = EditorCurveBinding.FloatCurve(string.Empty, typeof(Animator), HeadAxes[i].muscle);
+                var curve = new AnimationCurve(
+                    new Keyframe(0f, values[i]),
+                    new Keyframe(MuscleClipSeconds, values[i]));
+                AnimationUtility.SetEditorCurve(clip, binding, curve);
+            }
+            AssetDatabase.AddObjectToAsset(clip, controller);
+            return clip;
         }
 
         /// <summary>
@@ -290,7 +348,12 @@ namespace VRChatCameraOsc.AvatarSetup
                 Object.DestroyImmediate(layer.avatarMask, true);
             }
 
-            controller.parameters = controller.parameters.Where(p => p.name != paramName).ToArray();
+            // The combined head layer is keyed by a pseudo-param; its real
+            // Animator parameters are the three head axes.
+            var toDrop = paramName == CombinedHeadKey
+                ? HeadAxes.Select(a => a.param).ToArray()
+                : new[] { paramName };
+            controller.parameters = controller.parameters.Where(p => !toDrop.Contains(p.name)).ToArray();
             return true;
         }
 
@@ -469,19 +532,5 @@ namespace VRChatCameraOsc.AvatarSetup
         /// clips, Head = Animation is re-asserted every second.</summary>
         const float MuscleClipSeconds = 1f;
 
-        static AnimationClip MuscleClip(AnimatorController controller, string paramName, string muscleName, float value)
-        {
-            // Flat (constant-value) curve with real duration; Override
-            // blending (see AddHeadPoseLayer — the additive + t=0-ramp
-            // variant is retired, it produced zero motion in the client).
-            var clip = new AnimationClip { name = $"{LayerNameFor(paramName)}_{value:0.##}" };
-            var binding = EditorCurveBinding.FloatCurve(string.Empty, typeof(Animator), muscleName);
-            var curve = new AnimationCurve(
-                new Keyframe(0f, value),
-                new Keyframe(MuscleClipSeconds, value));
-            AnimationUtility.SetEditorCurve(clip, binding, curve);
-            AssetDatabase.AddObjectToAsset(clip, controller);
-            return clip;
-        }
     }
 }

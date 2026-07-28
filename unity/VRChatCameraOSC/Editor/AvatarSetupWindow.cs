@@ -25,15 +25,6 @@ namespace VRChatCameraOsc.AvatarSetup
     /// </summary>
     public class AvatarSetupWindow : EditorWindow
     {
-        /// <summary>Humanoid muscle name per head-pose OSC parameter (confirmed
-        /// against <see cref="HumanTrait.MuscleName"/> — see the package README).</summary>
-        static readonly Dictionary<string, string> HeadPoseMuscles = new Dictionary<string, string>
-        {
-            { "v2/Head/Roll", "Head Tilt Left-Right" },
-            { "v2/Head/Yaw", "Head Turn Left-Right" },
-            { "v2/Head/Pitch", "Head Nod Down-Up" },
-        };
-
         VRCAvatarDescriptor _avatar;
         readonly Dictionary<string, SkinnedMeshRenderer> _positiveRenderer = new Dictionary<string, SkinnedMeshRenderer>();
         readonly Dictionary<string, string> _positiveBlendShape = new Dictionary<string, string>();
@@ -169,6 +160,8 @@ namespace VRChatCameraOsc.AvatarSetup
             var additive = TryGetAdditiveController(avatar);
             var gesture = TryGetGestureController(avatar);
             return OscParameterSpec.All.Count(s =>
+                (s.Kind == OscParamKind.HeadPose && gesture != null &&
+                 OscAnimatorLayerBuilder.HasLayer(gesture, OscAnimatorLayerBuilder.CombinedHeadKey)) ||
                 (fx != null && OscAnimatorLayerBuilder.HasLayer(fx, s.Name)) ||
                 (additive != null && OscAnimatorLayerBuilder.HasLayer(additive, s.Name)) ||
                 (gesture != null && OscAnimatorLayerBuilder.HasLayer(gesture, s.Name)));
@@ -321,14 +314,9 @@ namespace VRChatCameraOsc.AvatarSetup
                         }
                         break;
                     case OscParamKind.HeadPose:
-                        if (_includeHeadPose)
-                        {
-                            if (gestureController == null)
-                            {
-                                gestureController = EnsureGestureController(_avatar, out gestureCopiedDefaultHands);
-                            }
-                            OscAnimatorLayerBuilder.AddHeadPoseLayer(gestureController, spec.Name, HeadPoseMuscles[spec.Name]);
-                        }
+                        // All three axes are wired below as ONE combined
+                        // layer (issue #27: per-axis Override layers
+                        // group-override each other in-client).
                         break;
                 }
             }
@@ -338,9 +326,18 @@ namespace VRChatCameraOsc.AvatarSetup
                 OscAnimatorLayerBuilder.RemoveLayer(controller, stale.Name);
             }
 
-            if (gestureController != null)
+            if (_includeHeadPose)
             {
-                // Without this the head layers are inert in the client: the
+                gestureController = EnsureGestureController(_avatar, out gestureCopiedDefaultHands);
+                // Migrate the per-axis head layers a previous version added —
+                // left in place they would group-override the combined layer
+                // (issue #27), the very bug being fixed.
+                foreach (var headSpec in OscParameterSpec.All.Where(s => s.Kind == OscParamKind.HeadPose))
+                {
+                    OscAnimatorLayerBuilder.RemoveLayer(gestureController, headSpec.Name);
+                }
+                OscAnimatorLayerBuilder.AddCombinedHeadLayer(gestureController);
+                // Without this the head layer is inert in the client: the
                 // Gesture first-layer mask (stock: vrc_HandsOnly) is AND-ed
                 // over the whole playable layer (issue #25).
                 EnsureGestureMaskAllowsHead(_avatar, gestureController);
@@ -439,8 +436,13 @@ namespace VRChatCameraOsc.AvatarSetup
             var gestureController = TryGetGestureController(_avatar);
             if (gestureController != null)
             {
-                // Pre-Additive-era homes: strip head layers a previous
-                // version put on Gesture and undo its first-layer-mask swap.
+                if (OscAnimatorLayerBuilder.RemoveLayer(gestureController, OscAnimatorLayerBuilder.CombinedHeadKey))
+                {
+                    removedLayers++;
+                }
+                // Pre-combined-era homes: strip per-axis head layers a
+                // previous version put on Gesture, and undo its
+                // first-layer-mask swap.
                 foreach (var headSpec in OscParameterSpec.All.Where(s => s.Kind == OscParamKind.HeadPose))
                 {
                     if (OscAnimatorLayerBuilder.RemoveLayer(gestureController, headSpec.Name))
