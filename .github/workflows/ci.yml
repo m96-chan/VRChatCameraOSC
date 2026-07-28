@@ -23,10 +23,6 @@ jobs:
       # at build time via prost-build, which needs the `protoc` binary.
       - name: Install protoc
         run: brew install protobuf
-      # Default features only (camera + mesh-gpu), NOT --all-features: the
-      # opt-in `cuda` feature needs the CUDA toolkit (nvcc) to *build* —
-      # cudarc's build script hard-fails without it, and CI runners have no
-      # NVIDIA toolchain. cuda builds are verified on developer machines.
       - name: Clippy
         run: cargo clippy --all-targets -- -D warnings
       - name: Test
@@ -34,10 +30,9 @@ jobs:
 
   # Windows build gate (issue #11): the MediaFoundation capture backend has no
   # Windows dev machine to verify against, so CI is what proves the default
-  # feature set (camera + mesh-gpu) builds and tests green on Windows. Same
-  # feature policy as `test` above: default features only, no `cuda` (needs
-  # the CUDA toolkit to build). The camera-dependent paths are ignored/skipped
-  # tests here just like on the other runners (no webcam in CI).
+  # feature set (camera + mesh-gpu) builds and tests green on Windows. The
+  # camera-dependent paths are ignored/skipped tests here just like on the
+  # other runners (no webcam in CI).
   test-windows:
     runs-on: windows-latest
     steps:

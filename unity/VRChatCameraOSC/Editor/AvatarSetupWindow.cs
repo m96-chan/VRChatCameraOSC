@@ -29,16 +29,14 @@ namespace VRChatCameraOsc.AvatarSetup
         /// against <see cref="HumanTrait.MuscleName"/> — see the package README).</summary>
         static readonly Dictionary<string, string> HeadPoseMuscles = new Dictionary<string, string>
         {
-            { "HeadRoll", "Head Tilt Left-Right" },
-            { "HeadYaw", "Head Turn Left-Right" },
-            { "HeadPitch", "Head Nod Down-Up" },
+            { "v2/Head/Roll", "Head Tilt Left-Right" },
+            { "v2/Head/Yaw", "Head Turn Left-Right" },
+            { "v2/Head/Pitch", "Head Nod Down-Up" },
         };
 
         VRCAvatarDescriptor _avatar;
         readonly Dictionary<string, SkinnedMeshRenderer> _positiveRenderer = new Dictionary<string, SkinnedMeshRenderer>();
         readonly Dictionary<string, string> _positiveBlendShape = new Dictionary<string, string>();
-        readonly Dictionary<string, SkinnedMeshRenderer> _negativeRenderer = new Dictionary<string, SkinnedMeshRenderer>();
-        readonly Dictionary<string, string> _negativeBlendShape = new Dictionary<string, string>();
         bool _includeHeadPose = true;
         bool _disableNativeEyelids = true;
         bool _pendingAutoFill;
@@ -50,9 +48,11 @@ namespace VRChatCameraOsc.AvatarSetup
         void OnGUI()
         {
             EditorGUILayout.HelpBox(
-                "Wires this app's 10 OSC parameters to blend shapes/head bone you " +
-                "already have on this Humanoid avatar. Doesn't create blend shapes, " +
-                "doesn't add any runtime script.",
+                "Wires the standard VRCFT (Unified Expressions) v2/* parameters this " +
+                "app sends to blend shapes/head bone you already have on this " +
+                "Humanoid avatar — a \"lite\" face-tracking avatar that also works " +
+                "with VRCFaceTracking itself. Doesn't create blend shapes, doesn't " +
+                "add any runtime script.",
                 MessageType.Info);
 
             var newAvatar = (VRCAvatarDescriptor)EditorGUILayout.ObjectField(
@@ -62,8 +62,6 @@ namespace VRChatCameraOsc.AvatarSetup
                 _avatar = newAvatar;
                 _positiveRenderer.Clear();
                 _positiveBlendShape.Clear();
-                _negativeRenderer.Clear();
-                _negativeBlendShape.Clear();
                 _pendingAutoFill = true;
             }
 
@@ -112,12 +110,12 @@ namespace VRChatCameraOsc.AvatarSetup
 
             EditorGUILayout.Space();
             _includeHeadPose = EditorGUILayout.ToggleLeft(
-                "Wire HeadRoll / HeadYaw / HeadPitch to the Humanoid head bone (additive layer)",
+                "Wire v2/Head/Yaw / Pitch / Roll to the Humanoid head bone (additive layer)",
                 _includeHeadPose);
 
             var eyelidType = _avatar.customEyeLookSettings.eyelidType;
             if (eyelidType != VRCAvatarDescriptor.EyelidType.None &&
-                (_positiveRenderer.ContainsKey("EyeBlinkLeft") || _positiveRenderer.ContainsKey("EyeBlinkRight")))
+                (_positiveRenderer.ContainsKey("v2/EyeLidLeft") || _positiveRenderer.ContainsKey("v2/EyeLidRight")))
             {
                 _disableNativeEyelids = EditorGUILayout.ToggleLeft(
                     "Disable VRChat's native auto-blink/eye-tracking (Eyelids is currently " +
@@ -154,7 +152,7 @@ namespace VRChatCameraOsc.AvatarSetup
             }
         }
 
-        /// <summary>How many of the 10 parameters currently have an <c>OSC_*</c>
+        /// <summary>How many of the parameters currently have an <c>OSC_*</c>
         /// layer actually driving them (vs. just being declared). Head-pose
         /// parameters live on the Gesture controller (issue #16 head-pose
         /// fix) but are also checked against FX so avatars set up by an
@@ -191,28 +189,7 @@ namespace VRChatCameraOsc.AvatarSetup
                     continue;
                 }
 
-                if (spec.Kind == OscParamKind.SignedBlendShape)
-                {
-                    if (!_positiveRenderer.ContainsKey(spec.Name))
-                    {
-                        var positive = BlendShapeAutoMatcher.FindMouthWidePositive(body);
-                        if (positive != null)
-                        {
-                            _positiveRenderer[spec.Name] = body;
-                            _positiveBlendShape[spec.Name] = positive;
-                        }
-                    }
-                    if (!_negativeRenderer.ContainsKey(spec.Name))
-                    {
-                        var negative = BlendShapeAutoMatcher.FindMouthWideNegative(body);
-                        if (negative != null)
-                        {
-                            _negativeRenderer[spec.Name] = body;
-                            _negativeBlendShape[spec.Name] = negative;
-                        }
-                    }
-                }
-                else if (!_positiveRenderer.ContainsKey(spec.Name))
+                if (!_positiveRenderer.ContainsKey(spec.Name))
                 {
                     var shape = BlendShapeAutoMatcher.FindBlendShapeForParam(body, spec.Name);
                     if (shape != null)
@@ -228,12 +205,9 @@ namespace VRChatCameraOsc.AvatarSetup
         {
             EditorGUILayout.LabelField(spec.Name, EditorStyles.boldLabel);
             EditorGUI.indentLevel++;
-            DrawOneShapePicker(spec.Kind == OscParamKind.SignedBlendShape ? "Positive (+1)" : "Blend shape",
+            DrawOneShapePicker(
+                spec.Kind == OscParamKind.EyeLid ? "Blink shape (inverted)" : "Blend shape",
                 spec.Name, renderers, _positiveRenderer, _positiveBlendShape);
-            if (spec.Kind == OscParamKind.SignedBlendShape)
-            {
-                DrawOneShapePicker("Negative (-1, optional)", spec.Name, renderers, _negativeRenderer, _negativeBlendShape);
-            }
             EditorGUI.indentLevel--;
         }
 
@@ -283,6 +257,9 @@ namespace VRChatCameraOsc.AvatarSetup
         void RunSetup()
         {
             var expressionParameters = EnsureExpressionParameters(_avatar);
+            // Migrate a pre-issue-#21 (custom10) setup in place: strip the
+            // retired parameters and their layers before wiring the v2/* set.
+            RemoveLegacyCustom10(_avatar);
             var added = VrcExpressionParametersMerger.Merge(expressionParameters, OscParameterSpec.All);
 
             var controller = EnsureFxController(_avatar);
@@ -299,15 +276,11 @@ namespace VRChatCameraOsc.AvatarSetup
                             OscAnimatorLayerBuilder.AddBlendShapeLayer(controller, _avatar.transform, spec.Name, r, shape);
                         }
                         break;
-                    case OscParamKind.SignedBlendShape:
-                        _positiveRenderer.TryGetValue(spec.Name, out var posR);
-                        _positiveBlendShape.TryGetValue(spec.Name, out var posShape);
-                        _negativeRenderer.TryGetValue(spec.Name, out var negR);
-                        _negativeBlendShape.TryGetValue(spec.Name, out var negShape);
-                        if (posR != null || negR != null)
+                    case OscParamKind.EyeLid:
+                        if (_positiveRenderer.TryGetValue(spec.Name, out var eyeR) &&
+                            _positiveBlendShape.TryGetValue(spec.Name, out var eyeShape))
                         {
-                            OscAnimatorLayerBuilder.AddSignedBlendShapeLayer(
-                                controller, _avatar.transform, spec.Name, posR, posShape, negR, negShape);
+                            OscAnimatorLayerBuilder.AddEyeLidLayer(controller, _avatar.transform, spec.Name, eyeR, eyeShape);
                         }
                         break;
                     case OscParamKind.HeadPose:
@@ -337,7 +310,7 @@ namespace VRChatCameraOsc.AvatarSetup
 
             var disabledEyelids = false;
             if (_disableNativeEyelids &&
-                (_positiveRenderer.ContainsKey("EyeBlinkLeft") || _positiveRenderer.ContainsKey("EyeBlinkRight")) &&
+                (_positiveRenderer.ContainsKey("v2/EyeLidLeft") || _positiveRenderer.ContainsKey("v2/EyeLidRight")) &&
                 _avatar.customEyeLookSettings.eyelidType != VRCAvatarDescriptor.EyelidType.None)
             {
                 Undo.RecordObject(_avatar, "Disable native VRChat auto-blink (VRChatCameraOSC drives blink)");
@@ -393,6 +366,7 @@ namespace VRChatCameraOsc.AvatarSetup
             {
                 removedParams = VrcExpressionParametersMerger.Remove(_avatar.expressionParameters, OscParameterSpec.All);
             }
+            removedParams += RemoveLegacyCustom10(_avatar);
 
             var removedLayers = 0;
             var controller = TryGetFxController(_avatar);
@@ -425,6 +399,38 @@ namespace VRChatCameraOsc.AvatarSetup
                 "VRChatCameraOSC Setup",
                 $"Removed {removedParams} expression parameter(s) and {removedLayers} Animator layer(s).",
                 "OK");
+        }
+
+        /// <summary>
+        /// Strips everything a pre-issue-#21 wizard added under the retired
+        /// custom10 names (<see cref="OscParameterSpec.LegacyNames"/>):
+        /// expression parameters, FX layers, and the old Gesture/FX head-pose
+        /// layers. Run on both Apply (migrate in place) and Remove (clean old
+        /// avatars). Returns how many legacy expression parameters went away.
+        /// </summary>
+        static int RemoveLegacyCustom10(VRCAvatarDescriptor avatar)
+        {
+            var removed = 0;
+            if (avatar.expressionParameters != null)
+            {
+                removed = VrcExpressionParametersMerger.RemoveByName(
+                    avatar.expressionParameters, OscParameterSpec.LegacyNames);
+            }
+
+            var fx = TryGetFxController(avatar);
+            var gesture = TryGetGestureController(avatar);
+            foreach (var name in OscParameterSpec.LegacyNames)
+            {
+                if (fx != null && OscAnimatorLayerBuilder.RemoveLayer(fx, name))
+                {
+                    EditorUtility.SetDirty(fx);
+                }
+                if (gesture != null && OscAnimatorLayerBuilder.RemoveLayer(gesture, name))
+                {
+                    EditorUtility.SetDirty(gesture);
+                }
+            }
+            return removed;
         }
 
         static VRCExpressionParameters EnsureExpressionParameters(VRCAvatarDescriptor avatar)

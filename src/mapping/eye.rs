@@ -13,10 +13,9 @@
 //! - Data times out after 10 s, reverting to VRChat's own eye behaviour — so
 //!   losing the face falls back gracefully without any cleanup message.
 //!
-//! This mapper is orthogonal to the mapping profile (`custom10`/`vrcft`):
-//! the pipeline appends its output to whichever profile mapper is active
-//! (the 竹 tier of the 松竹梅 design in issue #19). It consumes the same
-//! [`ArkitFaceFrame`] as the profile mappers — mediapipe backend only.
+//! This mapper is orthogonal to the avatar-parameter mapping: the pipeline
+//! appends its output to the `UnifiedMapper`'s (the 竹 tier of the 松竹梅
+//! design in issue #19). It consumes the same [`ArkitFaceFrame`].
 //!
 //! # Derivation
 //!

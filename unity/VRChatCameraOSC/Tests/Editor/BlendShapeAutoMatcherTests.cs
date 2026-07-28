@@ -69,38 +69,37 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             var body = MakeRenderer(
                 "Body",
                 "vrc.blink_left", "vrc.blink_right",
-                "Fcl_MTH_A", "Fcl_MTH_Fun",
+                "Fcl_MTH_A",
+                "Mouth_Smile_L", "Mouth_Smile_R",
                 "BrowUp_L", "BrowUp_R");
 
-            Assert.AreEqual("Fcl_MTH_A", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "MouthOpen"));
-            Assert.AreEqual("vrc.blink_left", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "EyeBlinkLeft"));
-            Assert.AreEqual("vrc.blink_right", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "EyeBlinkRight"));
-            Assert.AreEqual("Fcl_MTH_Fun", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "MouthSmile"));
-            Assert.AreEqual("BrowUp_L", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "BrowUpLeft"));
-            Assert.AreEqual("BrowUp_R", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "BrowUpRight"));
+            Assert.AreEqual("Fcl_MTH_A", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/JawOpen"));
+            Assert.AreEqual("vrc.blink_left", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/EyeLidLeft"));
+            Assert.AreEqual("vrc.blink_right", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/EyeLidRight"));
+            Assert.AreEqual("Mouth_Smile_L", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/MouthSmileLeft"));
+            Assert.AreEqual("Mouth_Smile_R", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/MouthSmileRight"));
+            Assert.AreEqual("BrowUp_L", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/BrowUpLeft"));
+            Assert.AreEqual("BrowUp_R", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/BrowUpRight"));
         }
 
         [Test]
-        public void FindBlendShapeForParam_BrowFallsBackToSharedShape_WhenNoLRSplit()
+        public void FindBlendShapeForParam_FallsBackToSharedShape_WhenNoLRSplit()
         {
-            var body = MakeRenderer("Body", "BrowUp");
-            Assert.AreEqual("BrowUp", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "BrowUpLeft"));
-            Assert.AreEqual("BrowUp", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "BrowUpRight"));
+            var body = MakeRenderer("Body", "BrowUp", "Fcl_MTH_Fun", "Mouth_Wide");
+            Assert.AreEqual("BrowUp", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/BrowUpLeft"));
+            Assert.AreEqual("BrowUp", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/BrowUpRight"));
+            // A single (non-split) smile / wide shape drives both sides.
+            Assert.AreEqual("Fcl_MTH_Fun", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/MouthSmileLeft"));
+            Assert.AreEqual("Fcl_MTH_Fun", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/MouthSmileRight"));
+            Assert.AreEqual("Mouth_Wide", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/MouthStretchLeft"));
+            Assert.AreEqual("Mouth_Wide", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/MouthStretchRight"));
         }
 
         [Test]
         public void FindBlendShapeForParam_ReturnsNull_WhenNothingMatches()
         {
             var body = MakeRenderer("Body", "SomeUnrelatedShape");
-            Assert.IsNull(BlendShapeAutoMatcher.FindBlendShapeForParam(body, "MouthOpen"));
-        }
-
-        [Test]
-        public void MouthWideKeywords_MatchWideAndPucker()
-        {
-            var body = MakeRenderer("Body", "Mouth_Wide", "Mouth_Pucker");
-            Assert.AreEqual("Mouth_Wide", BlendShapeAutoMatcher.FindBlendShape(body, BlendShapeAutoMatcher.MouthWidePositiveKeywords));
-            Assert.AreEqual("Mouth_Pucker", BlendShapeAutoMatcher.FindBlendShape(body, BlendShapeAutoMatcher.MouthWideNegativeKeywords));
+            Assert.IsNull(BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/JawOpen"));
         }
 
         [Test]
@@ -110,54 +109,48 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         }
 
         // Real-world regression (Chocolat avatar, issue #16 live test):
-        // "smile"/"wide" keywords wired MouthSmile -> eye_smile_1 and
-        // MouthWide -> eyelid_inner_wide, driving EYE shapes from mouth
-        // params (eyes permanently half-closed, blink stacking deeper).
+        // "smile"/"wide" keywords wired the smile param -> eye_smile_1 and
+        // the stretch param -> eyelid_inner_wide, driving EYE shapes from
+        // mouth params (eyes permanently half-closed, blink stacking deeper).
         // Mouth params must never match another face region's shapes.
         [Test]
         public void MouthSmile_NeverMatchesEyeShapes_EvenWhenNoMouthShapeExists()
         {
             var body = MakeRenderer("Body", "eye_smile_1", "eye_blink_1_L", "eyelid_inner_wide");
-            Assert.IsNull(BlendShapeAutoMatcher.FindBlendShapeForParam(body, "MouthSmile"));
+            Assert.IsNull(BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/MouthSmileLeft"));
+            Assert.IsNull(BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/MouthSmileRight"));
         }
 
         [Test]
         public void MouthSmile_PrefersMouthShape_OverEyeShapeListedFirst()
         {
             var body = MakeRenderer("Body", "eye_smile_1", "mouth_smile_1");
-            Assert.AreEqual("mouth_smile_1", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "MouthSmile"));
+            Assert.AreEqual("mouth_smile_1", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/MouthSmileLeft"));
         }
 
         [Test]
-        public void MouthWide_NeverMatchesEyelidShapes()
+        public void MouthStretch_NeverMatchesEyelidShapes()
         {
             var body = MakeRenderer("Body", "eyelid_inner_wide", "eye_wide");
-            Assert.IsNull(BlendShapeAutoMatcher.FindMouthWidePositive(body));
+            Assert.IsNull(BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/MouthStretchLeft"));
             var body2 = MakeRenderer("Body2", "eyelid_inner_wide", "mouth_wide_1");
-            Assert.AreEqual("mouth_wide_1", BlendShapeAutoMatcher.FindMouthWidePositive(body2));
-        }
-
-        [Test]
-        public void MouthWideNegative_NeverMatchesEyeShapes()
-        {
-            var body = MakeRenderer("Body", "eye_pucker_weird");
-            Assert.IsNull(BlendShapeAutoMatcher.FindMouthWideNegative(body));
+            Assert.AreEqual("mouth_wide_1", BlendShapeAutoMatcher.FindBlendShapeForParam(body2, "v2/MouthStretchLeft"));
         }
 
         [Test]
         public void BrowUp_StillMatchesEyebrowShapes_RegionGuardMustNotOverreach()
         {
             var body = MakeRenderer("Body", "eyebrow_up_L", "eyebrow_up_R");
-            Assert.AreEqual("eyebrow_up_L", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "BrowUpLeft"));
-            Assert.AreEqual("eyebrow_up_R", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "BrowUpRight"));
+            Assert.AreEqual("eyebrow_up_L", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/BrowUpLeft"));
+            Assert.AreEqual("eyebrow_up_R", BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/BrowUpRight"));
         }
 
         [Test]
-        public void EyeBlink_NeverMatchesEyebrowShapes()
+        public void EyeLid_NeverMatchesEyebrowShapes()
         {
-            // "eyebrow_close_l" is a brow shape; blink must not grab it.
+            // "eyebrow_wink_l" is a brow shape; the eyelid param must not grab it.
             var body = MakeRenderer("Body", "eyebrow_wink_l");
-            Assert.IsNull(BlendShapeAutoMatcher.FindBlendShapeForParam(body, "EyeBlinkLeft"));
+            Assert.IsNull(BlendShapeAutoMatcher.FindBlendShapeForParam(body, "v2/EyeLidLeft"));
         }
     }
 }

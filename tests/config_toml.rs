@@ -54,7 +54,7 @@ fn partial_toml_fills_defaults() {
     assert_eq!(cfg.osc.host, "127.0.0.1");
     assert!(!cfg.osc.dry_run);
     assert_eq!(cfg.camera, Default::default());
-    assert_eq!(cfg.tracking, Default::default());
+    assert_eq!(cfg.mapping, Default::default());
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn save_then_load_round_trip() {
 
     let mut cfg = Config::default();
     cfg.camera.device_index = 2;
-    cfg.tracking.smoothing = 0.25;
+    cfg.osc.listen_port = 9051;
     cfg.save(&path).expect("save");
 
     let loaded = Config::load(&path).expect("load");
@@ -134,26 +134,6 @@ fn validate_rejects_port_zero() {
     let mut cfg = Config::default();
     cfg.osc.port = 0;
     assert!(cfg.validate().is_err());
-}
-
-#[test]
-fn validate_rejects_out_of_range_smoothing() {
-    let mut cfg = Config::default();
-    cfg.tracking.smoothing = 1.5;
-    assert!(cfg.validate().is_err());
-
-    let mut cfg = Config::default();
-    cfg.tracking.smoothing = -0.1;
-    assert!(cfg.validate().is_err());
-}
-
-#[test]
-fn validate_accepts_smoothing_bounds() {
-    let mut cfg = Config::default();
-    cfg.tracking.smoothing = 0.0;
-    assert!(cfg.validate().is_ok());
-    cfg.tracking.smoothing = 1.0;
-    assert!(cfg.validate().is_ok());
 }
 
 #[test]
@@ -256,16 +236,22 @@ fn default_path_respects_env() {
     }
 }
 
+// Retired-format keys (issue #21): config files written by pre-#21 builds
+// carried `[tracking]` (backend/smoothing) and `[mapping] profile`. Those
+// sections/keys no longer exist; loading such a file must still succeed,
+// silently ignoring them, and freshly saved configs must not contain them.
 #[test]
-fn tracking_backend_defaults_to_mediapipe() {
-    use vrchat_camera_osc::config::TrackingBackend;
-    assert_eq!(
-        Config::default().tracking.backend,
-        TrackingBackend::Mediapipe
+fn legacy_tracking_and_profile_keys_are_ignored() {
+    let legacy = "[tracking]\nbackend = \"fan\"\nsmoothing = 0.5\n\
+                  \n[mapping]\nprofile = \"custom10\"\n";
+    let cfg: Config = toml::from_str(legacy).expect("legacy config must still load");
+    assert_eq!(cfg, Config::default());
+
+    let out = toml::to_string_pretty(&Config::default()).unwrap();
+    assert!(
+        !out.contains("profile") && !out.contains("backend") && !out.contains("[tracking]"),
+        "retired keys must not be written to new configs:\n{out}"
     );
-    // A config file written before the backend field existed still loads.
-    let cfg: Config = toml::from_str("[tracking]\nsmoothing = 0.5\n").unwrap();
-    assert_eq!(cfg.tracking.backend, TrackingBackend::Mediapipe);
 }
 
 // Avatar-aware vrcft keys (issue #18 phases 2+3): [osc] listen_port and
@@ -316,17 +302,4 @@ fn avatar_config_dir_defaults_to_none_and_round_trips() {
         loaded.mapping.avatar_config_dir.as_deref(),
         Some("/tmp/osc-configs")
     );
-}
-
-#[test]
-fn tracking_backend_fan_is_selectable() {
-    use vrchat_camera_osc::config::TrackingBackend;
-    let cfg: Config = toml::from_str("[tracking]\nbackend = \"fan\"\n").unwrap();
-    assert_eq!(cfg.tracking.backend, TrackingBackend::Fan);
-    // And it round-trips through save/load.
-    let dir = TempDir::new("backend-roundtrip");
-    let path = dir.join("config.toml");
-    cfg.save(&path).unwrap();
-    let loaded = Config::load(&path).unwrap();
-    assert_eq!(loaded.tracking.backend, TrackingBackend::Fan);
 }

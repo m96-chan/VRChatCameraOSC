@@ -34,7 +34,6 @@ const CONFIG_FILE: &str = "config.toml";
 pub struct Config {
     pub osc: OscConfig,
     pub camera: CameraConfig,
-    pub tracking: TrackingConfig,
     pub mapping: MappingConfig,
     pub eye: EyeConfig,
 }
@@ -67,17 +66,6 @@ pub struct CameraConfig {
     pub height: u32,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct TrackingConfig {
-    /// Exponential smoothing factor in 0..1 (higher = snappier, less smooth).
-    /// Only used by the `fan` backend; `mediapipe` has its own One-Euro
-    /// smoothing tuned per channel.
-    pub smoothing: f32,
-    /// Which face-tracking backend drives the pipeline (issue #17).
-    pub backend: TrackingBackend,
-}
-
 /// Native VRChat eye-tracking OSC (`/tracking/eye/*`, issue #19): drives the
 /// avatar's existing eye bones directly — no avatar parameters needed. Works
 /// alongside either mapping profile; mediapipe backend only.
@@ -103,13 +91,13 @@ impl Default for EyeConfig {
     }
 }
 
-/// Output mapping profile selection (issue #18).
+/// Output mapping settings. Since issue #21 there is a single output format:
+/// the VRCFT-compatible Unified Expressions `v2/` parameter set (issue #18) —
+/// the former `custom10` profile (and its `profile` key) is retired.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MappingConfig {
-    /// Which OSC parameter set is emitted (issue #18).
-    pub profile: MappingProfile,
-    /// Address prefixes for the `vrcft` profile: each parameter is sent once
+    /// Address prefixes for the fallback output: each parameter is sent once
     /// per prefix (`""` → `v2/JawOpen`, `"FT/"` → `FT/v2/JawOpen`, ...).
     /// Since issue #18 phase 3 this is the **no-avatar-config fallback
     /// only**: when the worn avatar's OSC config is discovered, output is
@@ -127,7 +115,6 @@ pub struct MappingConfig {
 impl Default for MappingConfig {
     fn default() -> Self {
         Self {
-            profile: MappingProfile::default(),
             vrcft_prefixes: crate::mapping::unified::DEFAULT_PREFIXES
                 .iter()
                 .map(|s| s.to_string())
@@ -135,33 +122,6 @@ impl Default for MappingConfig {
             avatar_config_dir: None,
         }
     }
-}
-
-/// Which OSC parameter set the mapper emits (issue #18):
-/// - `custom10` (default): this app's original 10 parameters, wired by the
-///   `unity/` wizard.
-/// - `vrcft`: VRCFaceTracking-compatible Unified Expressions `v2/` floats —
-///   works out of the box on VRCFT-ready avatars. Requires the `mediapipe`
-///   backend. Default until the vrcft profile passes its end-to-end VRChat
-///   demo (recorded in issue #18) — revisit then.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum MappingProfile {
-    #[default]
-    Custom10,
-    Vrcft,
-}
-
-/// Face-tracking backend selection (issue #17). `mediapipe` (default) is the
-/// AvataCam-ported YuNet + FaceMesh V2 + Blendshape V2 stack; `fan` is the
-/// original S3FD + FAN 68-landmark geometric pipeline, kept selectable per
-/// the "models are pluggable" principle.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum TrackingBackend {
-    #[default]
-    Mediapipe,
-    Fan,
 }
 
 impl Default for OscConfig {
@@ -186,15 +146,6 @@ impl Default for CameraConfig {
     }
 }
 
-impl Default for TrackingConfig {
-    fn default() -> Self {
-        Self {
-            smoothing: 0.5,
-            backend: TrackingBackend::default(),
-        }
-    }
-}
-
 /// Optional CLI-supplied overrides applied on top of the loaded config.
 ///
 /// Precedence is **CLI (these) > config file > defaults**: a `Some(_)` field
@@ -212,8 +163,6 @@ pub struct ConfigOverrides {
 pub enum ConfigError {
     #[error("OSC port must be non-zero")]
     ZeroPort,
-    #[error("tracking.smoothing must be within 0.0..=1.0 (got {0})")]
-    SmoothingOutOfRange(String),
     #[error("camera dimensions must be > 0 (got {width}x{height})")]
     ZeroDimensions { width: u32, height: u32 },
 }
@@ -298,11 +247,6 @@ impl Config {
     pub fn validate(&self) -> anyhow::Result<()> {
         if self.osc.port == 0 {
             return Err(ConfigError::ZeroPort.into());
-        }
-        if !(0.0..=1.0).contains(&self.tracking.smoothing) {
-            return Err(
-                ConfigError::SmoothingOutOfRange(self.tracking.smoothing.to_string()).into(),
-            );
         }
         if self.camera.width == 0 || self.camera.height == 0 {
             return Err(ConfigError::ZeroDimensions {

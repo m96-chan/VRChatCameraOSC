@@ -35,7 +35,10 @@ namespace VRChatCameraOsc.AvatarSetup
                 {
                     name = spec.Name,
                     valueType = VRCExpressionParameters.ValueType.Float,
-                    defaultValue = 0f,
+                    // Non-zero for v2/EyeLid* (0.75 = relaxed open, VRCFT
+                    // semantics): with no tracker sending, the avatar must
+                    // rest with open eyes, not shut ones (issue #21).
+                    defaultValue = spec.DefaultValue,
                     saved = false,
                     networkSynced = true,
                 });
@@ -55,9 +58,21 @@ namespace VRChatCameraOsc.AvatarSetup
         /// <returns>How many parameters were removed.</returns>
         public static int Remove(VRCExpressionParameters asset, IEnumerable<OscParamSpec> specs)
         {
-            var names = new HashSet<string>(specs.Select(s => s.Name));
+            return RemoveByName(asset, specs.Select(s => s.Name));
+        }
+
+        /// <summary>
+        /// Removes parameters by bare name — used to clean the retired
+        /// custom10 parameter names (<see cref="OscParameterSpec.LegacyNames"/>)
+        /// off an avatar set up by a pre-issue-#21 wizard, so re-applying
+        /// migrates instead of accumulating dead parameters.
+        /// </summary>
+        /// <returns>How many parameters were removed.</returns>
+        public static int RemoveByName(VRCExpressionParameters asset, IEnumerable<string> names)
+        {
+            var nameSet = new HashSet<string>(names);
             var kept = (asset.parameters ?? new VRCExpressionParameters.Parameter[0])
-                .Where(p => p == null || !names.Contains(p.name))
+                .Where(p => p == null || !nameSet.Contains(p.name))
                 .ToArray();
             var removed = (asset.parameters?.Length ?? 0) - kept.Length;
             if (removed == 0)
@@ -65,7 +80,7 @@ namespace VRChatCameraOsc.AvatarSetup
                 return 0;
             }
 
-            Undo.RecordObject(asset, "Remove VRChatCameraOSC Expression Parameters");
+            Undo.RecordObject(asset, "Remove legacy VRChatCameraOSC Expression Parameters");
             asset.parameters = kept;
             EditorUtility.SetDirty(asset);
             return removed;
