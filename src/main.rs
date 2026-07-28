@@ -9,12 +9,12 @@
 //!
 //! Camera: the native backend (AVFoundation on macOS, V4L2 on Linux) is used
 //! when available; `--fake` forces the synthetic source (also the automatic
-//! fallback when no webcam is present). Tracker: loaded from
-//! `models/2dfan4.safetensors` when present; without it the loop runs but
-//! emits no parameters (a clear warning is shown).
+//! fallback when no webcam is present). Tracker: the MediaPipe face stack
+//! (auto-downloaded ONNX models); without it the loop runs but emits no
+//! parameters (a clear warning is shown).
 
 use std::io::{self, Stdout};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -27,45 +27,18 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use vrchat_camera_osc::capture::{CameraSource, FakeCamera, FpsCounter};
-use vrchat_camera_osc::config::{Config, MappingProfile, TrackingBackend};
-use vrchat_camera_osc::mapping::arkit::{ArkitMapper, ArkitMappingConfig};
+use vrchat_camera_osc::config::Config;
+use vrchat_camera_osc::mapping::arkit::ArkitMappingConfig;
 use vrchat_camera_osc::mapping::avatar::{self, AvatarWatcher};
 use vrchat_camera_osc::mapping::eye::{EyeRange, NativeEyeMapper};
 use vrchat_camera_osc::mapping::unified::UnifiedMapper;
-use vrchat_camera_osc::mapping::{ArkitOscMapper, Mapper};
 use vrchat_camera_osc::models;
 use vrchat_camera_osc::osc::oscquery::{MdnsVrchatDiscovery, OscQueryAdvertiser, OscQueryClient};
 use vrchat_camera_osc::osc::{AvatarChangeListener, MonitorSink, OscSink, UdpOscSender};
 use vrchat_camera_osc::pipeline::Pipeline;
 use vrchat_camera_osc::tracking::arkit::ArkitFaceTracker;
-use vrchat_camera_osc::tracking::detect::sfd::SfdDetector;
-use vrchat_camera_osc::tracking::fan::FanTracker;
 use vrchat_camera_osc::tracking::mediapipe::MediapipeTracker;
-use vrchat_camera_osc::tracking::FaceTracker;
 use vrchat_camera_osc::tui::{render, UiState};
-
-/// Default FAN weights path — also the only path auto-downloaded on first
-/// run (issue #12); a custom `--weights` path is left for the user to manage.
-fn default_weights_path() -> PathBuf {
-    PathBuf::from("models/2dfan4.safetensors")
-}
-
-/// Default S3FD detector path — see [`default_weights_path`].
-fn default_detector_path() -> PathBuf {
-    PathBuf::from("models/s3fd.safetensors")
-}
-
-const FAN_MODEL_URL: &str =
-    "https://github.com/m96-chan/VRChatCameraOSC/releases/download/models-v1/2dfan4.safetensors";
-const SFD_MODEL_URL: &str =
-    "https://github.com/m96-chan/VRChatCameraOSC/releases/download/models-v1/s3fd.safetensors";
-
-/// Default FAN-backend detector re-run interval (issue #13): S3FD is the
-/// dominant per-frame cost there, so it's only re-run this often;
-/// landmarks-derived crops carry tracking through the frames in between.
-/// The MediaPipe backend has its own default
-/// (`tracking::mediapipe::DEFAULT_REDETECT_INTERVAL`, ~once a second).
-const FAN_DEFAULT_DETECT_INTERVAL: u32 = 8;
 
 /// Default neutral-pose calibration window (issue #15): captured once at
 /// startup (and again on demand via `c` in the TUI), assuming the subject
@@ -76,15 +49,9 @@ struct Args {
     monitor: bool,
     fake: bool,
     frames: Option<u64>,
-    weights: PathBuf,
-    detector: PathBuf,
-    /// `None` = per-backend default (FAN 8, MediaPipe ~30).
+    /// `None` = the backend default (~once a second safety-net redetect).
     detect_interval: Option<u32>,
     calibrate_frames: u32,
-    /// CLI override for `tracking.backend` (`--backend mediapipe|fan`).
-    backend: Option<TrackingBackend>,
-    /// CLI override for `mapping.profile` (`--mapping custom10|vrcft`).
-    mapping: Option<MappingProfile>,
     /// CLI override for `eye.native` (`--native-eye on|off`).
     native_eye: Option<bool>,
     /// CLI override for `osc.oscquery` (`--oscquery on|off`).
@@ -96,12 +63,8 @@ fn parse_args() -> Args {
         monitor: false,
         fake: false,
         frames: None,
-        weights: default_weights_path(),
-        detector: default_detector_path(),
         detect_interval: None,
         calibrate_frames: DEFAULT_CALIBRATE_FRAMES,
-        backend: None,
-        mapping: None,
         native_eye: None,
         oscquery: None,
     };
@@ -111,16 +74,6 @@ fn parse_args() -> Args {
             "--monitor" => a.monitor = true,
             "--fake" => a.fake = true,
             "--frames" => a.frames = it.next().and_then(|v| v.parse().ok()),
-            "--weights" => {
-                if let Some(p) = it.next() {
-                    a.weights = PathBuf::from(p);
-                }
-            }
-            "--detector" => {
-                if let Some(p) = it.next() {
-                    a.detector = PathBuf::from(p);
-                }
-            }
             "--detect-interval" => {
                 if let Some(n) = it.next().and_then(|v| v.parse().ok()) {
                     a.detect_interval = Some(n);
@@ -131,20 +84,17 @@ fn parse_args() -> Args {
                     a.calibrate_frames = n;
                 }
             }
-            "--backend" => match it.next().as_deref() {
-                Some("mediapipe") => a.backend = Some(TrackingBackend::Mediapipe),
-                Some("fan") => a.backend = Some(TrackingBackend::Fan),
-                other => eprintln!(
-                    "--backend expects 'mediapipe' or 'fan' (got {other:?}) — using config"
-                ),
-            },
-            "--mapping" => match it.next().as_deref() {
-                Some("custom10") => a.mapping = Some(MappingProfile::Custom10),
-                Some("vrcft") => a.mapping = Some(MappingProfile::Vrcft),
-                other => eprintln!(
-                    "--mapping expects 'custom10' or 'vrcft' (got {other:?}) — using config"
-                ),
-            },
+            "--mapping" | "--backend" => {
+                // Retired flags (issue #21): there is a single format/backend
+                // now. Consume the value so the rest of the args still parse.
+                let val = it.next();
+                eprintln!(
+                    "{arg} is retired (issue #21): the tracker always emits the \
+                     VRCFT Unified Expressions v2/* set from the MediaPipe \
+                     backend — ignoring {arg} {}",
+                    val.as_deref().unwrap_or("")
+                );
+            }
             "--native-eye" => match it.next().as_deref() {
                 Some("on") => a.native_eye = Some(true),
                 Some("off") => a.native_eye = Some(false),
@@ -162,9 +112,7 @@ fn parse_args() -> Args {
             "-h" | "--help" => {
                 println!(
                     "vrchat-camera-osc [--monitor] [--fake] [--frames N] \
-                     [--backend mediapipe|fan] [--mapping custom10|vrcft] \
                      [--native-eye on|off] [--oscquery on|off] \
-                     [--weights FAN.safetensors] [--detector S3FD.safetensors] \
                      [--detect-interval N] [--calibrate-frames N]"
                 );
                 std::process::exit(0);
@@ -218,12 +166,11 @@ fn build_sink(cfg: &Config) -> Result<Box<dyn OscSink>> {
     }
 }
 
-/// Download `path` from `url` on first run, but only when `path` is still the
-/// built-in default — a custom `--weights`/`--detector` path is the user's to
-/// manage. Never fails the caller: a download error just logs and leaves
-/// `path` missing, which the existing "tracking disabled" fallback handles.
-fn ensure_default_model_present(path: &Path, default: &Path, url: &str) {
-    if path != default || path.exists() {
+/// Download `path` from `url` on first run. Never fails the caller: a
+/// download error just logs and leaves `path` missing, which the existing
+/// "tracking disabled" fallback handles.
+fn ensure_model_present(path: &Path, url: &str) {
+    if path.exists() {
         return;
     }
     eprintln!("downloading {} (first run only) ...", path.display());
@@ -236,76 +183,15 @@ fn ensure_default_model_present(path: &Path, default: &Path, url: &str) {
     }
 }
 
-fn build_tracker(
-    weights: &PathBuf,
-    detector_path: &PathBuf,
-    detect_interval: Option<u32>,
-) -> Option<Box<dyn FaceTracker>> {
-    let detect_interval = detect_interval.unwrap_or(FAN_DEFAULT_DETECT_INTERVAL);
-    ensure_default_model_present(weights, &default_weights_path(), FAN_MODEL_URL);
-    ensure_default_model_present(detector_path, &default_detector_path(), SFD_MODEL_URL);
-
-    if !weights.exists() {
-        eprintln!(
-            "no FAN weights at {} — tracking disabled (run reference/gen_fixtures.py). \
-             The loop still runs; it just won't emit parameters.",
-            weights.display()
-        );
-        return None;
-    }
-    let mut tracker = match FanTracker::from_safetensors(weights) {
-        Ok(t) => t,
-        Err(e) => {
-            eprintln!("failed to load FAN weights {}: {e}", weights.display());
-            return None;
-        }
-    };
-
-    // Attach the S3FD detector when its weights are present, so the face is
-    // auto-cropped; otherwise fall back to whole-frame tracking.
-    if detector_path.exists() {
-        match SfdDetector::from_safetensors(detector_path) {
-            Ok(det) => {
-                tracker = tracker
-                    .with_detector(Box::new(det))
-                    .with_detect_interval(detect_interval);
-            }
-            Err(e) => eprintln!(
-                "failed to load detector {}: {e} — using whole-frame tracking",
-                detector_path.display()
-            ),
-        }
-    } else {
-        eprintln!(
-            "no detector weights at {} — using whole-frame tracking (see issue #9)",
-            detector_path.display()
-        );
-    }
-    Some(Box::new(tracker))
-}
-
 /// Build the MediaPipe (ARKit-blendshape) tracker — issue #17. Auto-downloads
-/// the three ONNX models on first run, mirroring [`build_tracker`]'s handling
-/// of the FAN/S3FD weights.
+/// the three ONNX models on first run.
 fn build_arkit_tracker(detect_interval: Option<u32>) -> Option<Box<dyn ArkitFaceTracker>> {
     let detection = models::default_face_detection_path();
     let landmarks = models::default_face_landmarks_path();
     let blendshapes = models::default_face_blendshapes_path();
-    ensure_default_model_present(
-        &detection,
-        &detection.clone(),
-        models::FACE_DETECTION_MODEL_URL,
-    );
-    ensure_default_model_present(
-        &landmarks,
-        &landmarks.clone(),
-        models::FACE_LANDMARKS_MODEL_URL,
-    );
-    ensure_default_model_present(
-        &blendshapes,
-        &blendshapes.clone(),
-        models::FACE_BLENDSHAPES_MODEL_URL,
-    );
+    ensure_model_present(&detection, models::FACE_DETECTION_MODEL_URL);
+    ensure_model_present(&landmarks, models::FACE_LANDMARKS_MODEL_URL);
+    ensure_model_present(&blendshapes, models::FACE_BLENDSHAPES_MODEL_URL);
 
     match MediapipeTracker::from_paths(&detection, &landmarks, &blendshapes) {
         Ok(t) => {
@@ -318,15 +204,14 @@ fn build_arkit_tracker(detect_interval: Option<u32>) -> Option<Box<dyn ArkitFace
         Err(e) => {
             eprintln!(
                 "failed to load the MediaPipe face stack: {e:#}\n\
-                 The loop still runs; it just won't emit parameters. \
-                 (Try `--backend fan` for the FAN fallback.)"
+                 The loop still runs; it just won't emit parameters."
             );
             None
         }
     }
 }
 
-/// Build the avatar-aware machinery for the `vrcft` profile (issue #18
+/// Build the avatar-aware machinery (issue #18
 /// phases 3 + 3b): the config-dir scan (explicit `[mapping]
 /// avatar_config_dir` override, else per-platform VRChat defaults), the
 /// `/avatar/change` listener on `[osc] listen_port` (default 9001; 0
@@ -421,55 +306,28 @@ fn main() -> Result<()> {
     });
     cfg.validate()?;
 
-    let backend = args.backend.unwrap_or(cfg.tracking.backend);
-    let profile = args.mapping.unwrap_or(cfg.mapping.profile);
-    if profile == MappingProfile::Vrcft && backend == TrackingBackend::Fan {
-        anyhow::bail!(
-            "--mapping vrcft requires the mediapipe backend — FAN's 68 geometric \
-             landmarks cannot drive Unified Expressions (issue #18)"
-        );
-    }
     let camera = build_camera(&cfg, args.fake);
     let sink = build_sink(&cfg)?;
+    let tracker = build_arkit_tracker(args.detect_interval);
+    let mapper = UnifiedMapper::new(
+        ArkitMappingConfig::default(),
+        cfg.mapping.vrcft_prefixes.clone(),
+    );
+    let oscquery = args.oscquery.unwrap_or(cfg.osc.oscquery);
+    let (watcher, advertiser) = build_avatar_watcher(&cfg, oscquery);
     // Kept alive for the whole run: dropping it withdraws our OSCQuery/mDNS
     // advertisement (issue #18 phase 3b).
-    let mut _oscquery_advertiser: Option<OscQueryAdvertiser> = None;
-    let mut pipeline = match backend {
-        TrackingBackend::Mediapipe => {
-            let tracker = build_arkit_tracker(args.detect_interval);
-            let mapper: Box<dyn ArkitOscMapper> = match profile {
-                MappingProfile::Vrcft => Box::new(UnifiedMapper::new(
-                    ArkitMappingConfig::default(),
-                    cfg.mapping.vrcft_prefixes.clone(),
-                )),
-                MappingProfile::Custom10 => {
-                    Box::new(ArkitMapper::new(ArkitMappingConfig::default()))
-                }
-            };
-            let mut pipeline = Pipeline::new_arkit(camera, tracker, mapper, sink);
-            if profile == MappingProfile::Vrcft {
-                let oscquery = args.oscquery.unwrap_or(cfg.osc.oscquery);
-                let (watcher, advertiser) = build_avatar_watcher(&cfg, oscquery);
-                _oscquery_advertiser = advertiser;
-                pipeline = pipeline.with_avatar_watcher(watcher);
-            }
-            if args.native_eye.unwrap_or(cfg.eye.native) {
-                pipeline = pipeline.with_native_eye(NativeEyeMapper::new(
-                    ArkitMappingConfig::default(),
-                    EyeRange {
-                        yaw_deg: cfg.eye.yaw_range_deg,
-                        pitch_deg: cfg.eye.pitch_range_deg,
-                    },
-                ));
-            }
-            pipeline
-        }
-        TrackingBackend::Fan => {
-            let tracker = build_tracker(&args.weights, &args.detector, args.detect_interval);
-            let mapper = Mapper::with_smoothing(cfg.tracking.smoothing);
-            Pipeline::new(camera, tracker, mapper, sink)
-        }
-    };
+    let _oscquery_advertiser: Option<OscQueryAdvertiser> = advertiser;
+    let mut pipeline = Pipeline::new(camera, tracker, mapper, sink).with_avatar_watcher(watcher);
+    if args.native_eye.unwrap_or(cfg.eye.native) {
+        pipeline = pipeline.with_native_eye(NativeEyeMapper::new(
+            ArkitMappingConfig::default(),
+            EyeRange {
+                yaw_deg: cfg.eye.yaw_range_deg,
+                pitch_deg: cfg.eye.pitch_range_deg,
+            },
+        ));
+    }
 
     calibrate_neutral(&mut pipeline, args.calibrate_frames);
 
@@ -570,7 +428,6 @@ fn run_monitor(
 fn run_tui(mut pipeline: Pipeline, cfg: &Config, calibrate_frames: u32) -> Result<()> {
     let mut state = UiState::new();
     state.set_osc_target(cfg.osc.host.clone(), cfg.osc.port);
-    state.set_smoothing(cfg.tracking.smoothing);
     state.dry_run = cfg.osc.dry_run;
 
     enable_raw_mode()?;

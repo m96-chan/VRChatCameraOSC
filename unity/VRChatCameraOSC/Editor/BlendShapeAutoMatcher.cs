@@ -21,24 +21,29 @@ namespace VRChatCameraOsc.AvatarSetup
         /// spaces/dashes -> underscore) blend shape name.</summary>
         static readonly Dictionary<string, string[]> Keywords = new Dictionary<string, string[]>
         {
-            ["MouthOpen"] = new[] { "mouth_open", "mouthopen", "open_mouth", "mouth_a", "fcl_mth_a", "vrc.mouthopen" },
-            ["EyeBlinkLeft"] = new[] { "blink_l", "blinkleft", "eye_close_l", "eyeclose_l", "wink_l", "fcl_eye_close_l" },
-            ["EyeBlinkRight"] = new[] { "blink_r", "blinkright", "eye_close_r", "eyeclose_r", "wink_r", "fcl_eye_close_r" },
-            ["BrowUpLeft"] = new[] { "brow_up_l", "browup_l", "browupleft", "fcl_brw_up_l" },
-            ["BrowUpRight"] = new[] { "brow_up_r", "browup_r", "browupright", "fcl_brw_up_r" },
-            ["MouthSmile"] = new[] { "smile", "mouth_smile", "fcl_mth_fun", "happy" },
+            ["v2/JawOpen"] = new[] { "mouth_open", "mouthopen", "open_mouth", "jaw_open", "jawopen", "mouth_a", "fcl_mth_a", "vrc.mouthopen" },
+            ["v2/EyeLidLeft"] = new[] { "blink_l", "blinkleft", "eye_close_l", "eyeclose_l", "wink_l", "fcl_eye_close_l" },
+            ["v2/EyeLidRight"] = new[] { "blink_r", "blinkright", "eye_close_r", "eyeclose_r", "wink_r", "fcl_eye_close_r" },
+            ["v2/BrowUpLeft"] = new[] { "brow_up_l", "browup_l", "browupleft", "fcl_brw_up_l" },
+            ["v2/BrowUpRight"] = new[] { "brow_up_r", "browup_r", "browupright", "fcl_brw_up_r" },
+            ["v2/MouthSmileLeft"] = new[] { "smile_l", "mouth_smile_l", "smileleft" },
+            ["v2/MouthSmileRight"] = new[] { "smile_r", "mouth_smile_r", "smileright" },
+            ["v2/MouthStretchLeft"] = new[] { "wide_l", "mouth_wide_l", "stretch_l" },
+            ["v2/MouthStretchRight"] = new[] { "wide_r", "mouth_wide_r", "stretch_r" },
         };
 
         /// <summary>Fallback keywords for parameters that often only exist as
-        /// one shared (non-L/R-split) shape on simpler avatars.</summary>
+        /// one shared (non-L/R-split) shape on simpler avatars — both sides
+        /// then drive the same shared shape.</summary>
         static readonly Dictionary<string, string[]> SharedFallback = new Dictionary<string, string[]>
         {
-            ["BrowUpLeft"] = new[] { "brow_up", "browup", "fcl_brw_up" },
-            ["BrowUpRight"] = new[] { "brow_up", "browup", "fcl_brw_up" },
+            ["v2/BrowUpLeft"] = new[] { "brow_up", "browup", "fcl_brw_up" },
+            ["v2/BrowUpRight"] = new[] { "brow_up", "browup", "fcl_brw_up" },
+            ["v2/MouthSmileLeft"] = new[] { "smile", "mouth_smile", "fcl_mth_fun", "happy" },
+            ["v2/MouthSmileRight"] = new[] { "smile", "mouth_smile", "fcl_mth_fun", "happy" },
+            ["v2/MouthStretchLeft"] = new[] { "wide", "mouth_wide", "grin" },
+            ["v2/MouthStretchRight"] = new[] { "wide", "mouth_wide", "grin" },
         };
-
-        public static readonly string[] MouthWidePositiveKeywords = { "wide", "mouth_wide", "grin" };
-        public static readonly string[] MouthWideNegativeKeywords = { "pucker", "mouth_pucker", "kiss", "duck" };
 
         /// <summary>
         /// Face-region guard (issue #16 live-test regression): generic
@@ -55,33 +60,20 @@ namespace VRChatCameraOsc.AvatarSetup
 
         static string[] ForbiddenFor(string paramName)
         {
-            if (paramName.StartsWith("Mouth", StringComparison.Ordinal))
+            if (paramName.StartsWith("v2/Mouth", StringComparison.Ordinal) ||
+                paramName.StartsWith("v2/Jaw", StringComparison.Ordinal))
             {
                 return MouthForbidden;
             }
-            if (paramName.StartsWith("EyeBlink", StringComparison.Ordinal))
+            if (paramName.StartsWith("v2/EyeLid", StringComparison.Ordinal))
             {
                 return EyeForbidden;
             }
-            if (paramName.StartsWith("BrowUp", StringComparison.Ordinal))
+            if (paramName.StartsWith("v2/BrowUp", StringComparison.Ordinal))
             {
                 return BrowForbidden;
             }
             return Array.Empty<string>();
-        }
-
-        /// <summary>Mouth-region-guarded pick for MouthWide's positive
-        /// (wide/grin) shape — see <see cref="MouthWidePositiveKeywords"/>.</summary>
-        public static string FindMouthWidePositive(SkinnedMeshRenderer renderer)
-        {
-            return FindBlendShape(renderer, MouthWidePositiveKeywords, MouthForbidden);
-        }
-
-        /// <summary>Mouth-region-guarded pick for MouthWide's negative
-        /// (pucker/kiss) shape — see <see cref="MouthWideNegativeKeywords"/>.</summary>
-        public static string FindMouthWideNegative(SkinnedMeshRenderer renderer)
-        {
-            return FindBlendShape(renderer, MouthWideNegativeKeywords, MouthForbidden);
         }
 
         /// <summary>

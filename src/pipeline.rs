@@ -1,29 +1,22 @@
 //! The realtime pipeline: capture → track → map → OSC (issue #8).
 //!
-//! [`Pipeline`] wires the four stages behind their traits so it is agnostic to
-//! the concrete camera, tracker, and OSC sink — the app builds it from config,
+//! [`Pipeline`] wires the stages behind their traits so it is agnostic to the
+//! concrete camera, tracker, and OSC sink — the app builds it from config,
 //! and tests build it from a synthetic camera + stub tracker + monitor sink.
 //!
-//! Two tracker/mapper stacks exist behind one pipeline type (issue #17):
-//!
-//! - **Landmarks** ([`Pipeline::new`]): a 68-point [`FaceTracker`] (FAN) feeding
-//!   the geometric [`Mapper`].
-//! - **ARKit** ([`Pipeline::new_arkit`]): an [`ArkitFaceTracker`] (MediaPipe)
-//!   producing 52 blendshape coefficients + head pose, feeding any
-//!   [`ArkitOscMapper`] — the 10-parameter `ArkitMapper` or the
-//!   VRCFT-compatible `UnifiedMapper` (issue #18).
-//!
-//! Every mapper emits plain [`OscParam`]s, so everything downstream (sink,
-//! TUI, monitor mode) is stack- and profile-agnostic.
+//! Since issue #21 there is a single tracker/mapper stack: an
+//! [`ArkitFaceTracker`] (MediaPipe) producing 52 blendshape coefficients +
+//! head pose, feeding the VRCFT-compatible [`UnifiedMapper`] (issue #18) —
+//! plus the optional native `/tracking/eye/*` mapper (issue #19). Every
+//! mapper emits plain [`OscParam`]s, so everything downstream (sink, TUI,
+//! monitor mode) is mapper-agnostic.
 
 use crate::capture::CameraSource;
 use crate::mapping::avatar::AvatarWatcher;
 use crate::mapping::eye::NativeEyeMapper;
-use crate::mapping::ArkitOscMapper;
-use crate::mapping::Mapper;
+use crate::mapping::unified::UnifiedMapper;
 use crate::osc::{OscParam, OscSink};
 use crate::tracking::arkit::ArkitFaceTracker;
-use crate::tracking::{FaceLandmarks, FaceTracker};
 use anyhow::Result;
 
 /// What one [`Pipeline::step`] produced — for the TUI/monitor to display.
@@ -31,74 +24,40 @@ use anyhow::Result;
 pub struct StepOutcome {
     /// `(width, height)` of the frame that was captured.
     pub frame_size: (u32, u32),
-    /// Landmarks detected this frame, if the landmarks stack is attached and
-    /// found a face (`None` on the ARKit stack — it has no 68-point output).
-    pub landmarks: Option<FaceLandmarks>,
     /// OSC parameters produced and sent this frame (empty if no face/tracker).
     pub params: Vec<OscParam>,
 }
 
-/// One of the two tracker→mapper stacks (see the module docs).
-enum Stack {
-    Landmarks {
-        tracker: Option<Box<dyn FaceTracker>>,
-        mapper: Mapper,
-    },
-    Arkit {
-        tracker: Option<Box<dyn ArkitFaceTracker>>,
-        /// Trait object: either mapping profile (10-param `ArkitMapper` or
-        /// VRCFT `UnifiedMapper`), chosen by config/CLI (issue #18).
-        mapper: Box<dyn ArkitOscMapper>,
-        /// Optional native `/tracking/eye/*` output appended to every frame's
-        /// params (issue #19) — orthogonal to the mapping profile. Boxed:
-        /// the mapper's filter bank dwarfs the other variant (clippy
-        /// `large_enum_variant`).
-        eye: Option<Box<NativeEyeMapper>>,
-    },
-}
-
-/// The capture→track→map→OSC pipeline. Each stage is a trait object so the
-/// concrete backends stay swappable.
+/// The capture→track→map→OSC pipeline. Camera, tracker, and sink stay trait
+/// objects so the concrete backends are swappable; the mapper is the (only)
+/// [`UnifiedMapper`].
 pub struct Pipeline {
     camera: Box<dyn CameraSource>,
-    stack: Stack,
+    tracker: Option<Box<dyn ArkitFaceTracker>>,
+    mapper: UnifiedMapper,
+    /// Optional native `/tracking/eye/*` output appended to every frame's
+    /// params (issue #19) — orthogonal to the parameter mapping.
+    eye: Option<Box<NativeEyeMapper>>,
     sink: Box<dyn OscSink>,
-    /// Avatar-aware VRCFT gating (issue #18 phase 3): polled once per step
-    /// for `/avatar/change`; feeds the mapper's `set_avatar_config`.
+    /// Avatar-aware gating (issue #18 phase 3): polled once per step for
+    /// `/avatar/change`; feeds the mapper's `set_avatar_config`.
     watcher: Option<AvatarWatcher>,
 }
 
 impl Pipeline {
-    /// Build the 68-landmark (FAN) stack.
+    /// Build the pipeline. `tracker: None` (models missing/failed to load)
+    /// still runs the loop — it just never emits parameters.
     pub fn new(
         camera: Box<dyn CameraSource>,
-        tracker: Option<Box<dyn FaceTracker>>,
-        mapper: Mapper,
-        sink: Box<dyn OscSink>,
-    ) -> Self {
-        Self {
-            camera,
-            stack: Stack::Landmarks { tracker, mapper },
-            sink,
-            watcher: None,
-        }
-    }
-
-    /// Build the ARKit-blendshape (MediaPipe) stack — issue #17. The mapper
-    /// is any [`ArkitOscMapper`] (mapping profile — issue #18).
-    pub fn new_arkit(
-        camera: Box<dyn CameraSource>,
         tracker: Option<Box<dyn ArkitFaceTracker>>,
-        mapper: Box<dyn ArkitOscMapper>,
+        mapper: UnifiedMapper,
         sink: Box<dyn OscSink>,
     ) -> Self {
         Self {
             camera,
-            stack: Stack::Arkit {
-                tracker,
-                mapper,
-                eye: None,
-            },
+            tracker,
+            mapper,
+            eye: None,
             sink,
             watcher: None,
         }
@@ -108,26 +67,18 @@ impl Pipeline {
     /// best-effort avatar config immediately, then polls it once per
     /// [`step`](Self::step) — a single nonblocking socket read; the
     /// filesystem is only touched when the avatar actually changes (see
-    /// `mapping::avatar` for the polling-not-thread rationale). Only the
-    /// ARKit stack's mapper can be avatar-aware; on the FAN stack this is a
-    /// harmless no-op.
+    /// `mapping::avatar` for the polling-not-thread rationale).
     pub fn with_avatar_watcher(mut self, mut watcher: AvatarWatcher) -> Self {
-        if let Stack::Arkit { mapper, .. } = &mut self.stack {
-            if let Some(cfg) = watcher.initial_config() {
-                mapper.set_avatar_config(Some(&cfg));
-            }
+        if let Some(cfg) = watcher.initial_config() {
+            self.mapper.set_avatar_config(Some(&cfg));
         }
         self.watcher = Some(watcher);
         self
     }
 
-    /// Attach the native `/tracking/eye/*` mapper (issue #19) to an ARKit
-    /// stack; a no-op on the landmarks (FAN) stack, which lacks the eye
-    /// channels it needs.
+    /// Attach the native `/tracking/eye/*` mapper (issue #19).
     pub fn with_native_eye(mut self, eye_mapper: NativeEyeMapper) -> Self {
-        if let Stack::Arkit { eye, .. } = &mut self.stack {
-            *eye = Some(Box::new(eye_mapper));
-        }
+        self.eye = Some(Box::new(eye_mapper));
         self
     }
 
@@ -139,46 +90,24 @@ impl Pipeline {
         // new avatar's param set.
         if let Some(watcher) = &mut self.watcher {
             if let Some(update) = watcher.poll() {
-                if let Stack::Arkit { mapper, .. } = &mut self.stack {
-                    mapper.set_avatar_config(update.as_ref());
-                }
+                self.mapper.set_avatar_config(update.as_ref());
             }
         }
 
         let frame = self.camera.next_frame()?;
-        let frame_size = (frame.width, frame.height);
-
         let mut outcome = StepOutcome {
-            frame_size,
+            frame_size: (frame.width, frame.height),
             ..Default::default()
         };
 
-        match &mut self.stack {
-            Stack::Landmarks { tracker, mapper } => {
-                if let Some(tracker) = tracker.as_mut() {
-                    if let Some(landmarks) = tracker.track(&frame)? {
-                        let params = mapper.map(&landmarks);
-                        self.sink.send(&params)?;
-                        outcome.params = params;
-                        outcome.landmarks = Some(landmarks);
-                    }
+        if let Some(tracker) = self.tracker.as_mut() {
+            if let Some(face) = tracker.track(&frame)? {
+                let mut params = self.mapper.map(&face);
+                if let Some(eye) = self.eye.as_mut() {
+                    params.extend(eye.map(&face));
                 }
-            }
-            Stack::Arkit {
-                tracker,
-                mapper,
-                eye,
-            } => {
-                if let Some(tracker) = tracker.as_mut() {
-                    if let Some(face) = tracker.track(&frame)? {
-                        let mut params = mapper.map(&face);
-                        if let Some(eye) = eye.as_mut() {
-                            params.extend(eye.map(&face));
-                        }
-                        self.sink.send(&params)?;
-                        outcome.params = params;
-                    }
-                }
+                self.sink.send(&params)?;
+                outcome.params = params;
             }
         }
         Ok(outcome)
@@ -199,42 +128,20 @@ impl Pipeline {
     /// caller decides how to report that; the mapper's prior config, whatever
     /// it was, is left untouched in that case).
     pub fn calibrate_neutral(&mut self, frames: u32) -> Result<usize> {
-        match &mut self.stack {
-            Stack::Landmarks { tracker, mapper } => {
-                let Some(tracker) = tracker.as_mut() else {
-                    return Ok(0);
-                };
-                let mut samples = Vec::new();
-                for _ in 0..frames {
-                    let frame = self.camera.next_frame()?;
-                    if let Some(landmarks) = tracker.track(&frame)? {
-                        samples.push(landmarks);
-                    }
-                }
-                mapper.calibrate(&samples);
-                Ok(samples.len())
-            }
-            Stack::Arkit {
-                tracker,
-                mapper,
-                eye,
-            } => {
-                let Some(tracker) = tracker.as_mut() else {
-                    return Ok(0);
-                };
-                let mut samples = Vec::new();
-                for _ in 0..frames {
-                    let frame = self.camera.next_frame()?;
-                    if let Some(face) = tracker.track(&frame)? {
-                        samples.push(face);
-                    }
-                }
-                mapper.calibrate(&samples);
-                if let Some(eye) = eye.as_mut() {
-                    eye.calibrate(&samples);
-                }
-                Ok(samples.len())
+        let Some(tracker) = self.tracker.as_mut() else {
+            return Ok(0);
+        };
+        let mut samples = Vec::new();
+        for _ in 0..frames {
+            let frame = self.camera.next_frame()?;
+            if let Some(face) = tracker.track(&frame)? {
+                samples.push(face);
             }
         }
+        self.mapper.calibrate(&samples);
+        if let Some(eye) = self.eye.as_mut() {
+            eye.calibrate(&samples);
+        }
+        Ok(samples.len())
     }
 }

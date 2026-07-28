@@ -1,20 +1,16 @@
-//! Auto-download pretrained model weights (FAN / S3FD, and the MediaPipe
-//! YuNet / FaceMesh V2 / Blendshape V2 ONNX stack, issue #17) on first run
-//! (issue #12), so end users don't need a Python/PyTorch toolchain — only
-//! `reference/gen_fixtures.py` (for contributors validating PyTorch parity)
-//! does.
+//! Auto-download pretrained model weights (the MediaPipe YuNet / FaceMesh V2
+//! / Blendshape V2 ONNX stack, issue #17) on first run (issue #12), so end
+//! users don't need a Python/PyTorch toolchain.
 //!
-//! Weights are hosted as GitHub Release assets (see `main.rs`'s
-//! `FAN_MODEL_URL` / `SFD_MODEL_URL`, and this module's
-//! `FACE_DETECTION_MODEL_URL` / `FACE_LANDMARKS_MODEL_URL` /
-//! `FACE_BLENDSHAPES_MODEL_URL`) and fetched over plain HTTPS.
+//! Weights are hosted as GitHub Release assets (`FACE_DETECTION_MODEL_URL` /
+//! `FACE_LANDMARKS_MODEL_URL` / `FACE_BLENDSHAPES_MODEL_URL`) and fetched
+//! over plain HTTPS.
 
 use anyhow::{bail, Context, Result};
 use std::path::{Path, PathBuf};
 
 /// Default local path for the YuNet face-detection ONNX model (issue #17).
-/// Auto-downloaded from [`FACE_DETECTION_MODEL_URL`] on first run, mirroring
-/// `main.rs`'s `default_weights_path` / `default_detector_path` for FAN/S3FD.
+/// Auto-downloaded from [`FACE_DETECTION_MODEL_URL`] on first run.
 pub fn default_face_detection_path() -> PathBuf {
     PathBuf::from("models/face_detection.onnx")
 }
@@ -31,8 +27,8 @@ pub fn default_face_blendshapes_path() -> PathBuf {
     PathBuf::from("models/face_blendshapes.onnx")
 }
 
-/// GitHub Release URL for the YuNet face-detection ONNX model. Hosted on the
-/// same `models-v1` release as the FAN/S3FD weights (see `main.rs`).
+/// GitHub Release URL for the YuNet face-detection ONNX model, hosted on
+/// this repo's `models-v1` release.
 pub const FACE_DETECTION_MODEL_URL: &str =
     "https://github.com/m96-chan/VRChatCameraOSC/releases/download/models-v1/face_detection.onnx";
 /// GitHub Release URL for the MediaPipe FaceMesh V2 ONNX model.

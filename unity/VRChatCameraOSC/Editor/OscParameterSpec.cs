@@ -3,21 +3,25 @@ using System.Collections.Generic;
 namespace VRChatCameraOsc.AvatarSetup
 {
     /// <summary>
-    /// What drives a given OSC parameter once wired into the FX Animator
-    /// Controller (issue #16).
+    /// What drives a given OSC parameter once wired into the Animator
+    /// Controllers (issue #16).
     /// </summary>
     public enum OscParamKind
     {
         /// <summary>0..1, drives a single blend shape weight (0 at 0, 100 at 1).</summary>
         BlendShape,
 
-        /// <summary>-1..1, drives up to two blend shapes: one for the positive
-        /// half of the range, one (optional) for the negative half.</summary>
-        SignedBlendShape,
+        /// <summary>A VRCFT <c>v2/EyeLid*</c> eyelid parameter (0..1,
+        /// <b>inverted</b> semantics: 0 = fully closed, ~0.75 = relaxed open,
+        /// 1 = wide). Drives a *blink/close* blend shape: weight 100 at 0,
+        /// weight 0 at <see cref="OscParameterSpec.EyeLidNeutral"/> and
+        /// above. Declared with a non-zero default so the avatar's eyes are
+        /// open when no tracker is running (issue #21).</summary>
+        EyeLid,
 
-        /// <summary>-1..1, drives the Humanoid head bone via an additive FX
-        /// layer (Humanoid muscle curves) — never a runtime script, see the
-        /// package README for why.</summary>
+        /// <summary>-1..1, drives the Humanoid head bone via an additive
+        /// Gesture-layer (Humanoid muscle curves) — never a runtime script,
+        /// see the package README for why.</summary>
         HeadPose,
     }
 
@@ -27,37 +31,70 @@ namespace VRChatCameraOsc.AvatarSetup
         public readonly string Name;
         public readonly float Min;
         public readonly float Max;
+        /// <summary>Declared VRC Expression Parameter default — the value the
+        /// avatar rests at when no tracker is sending (eyes open, face neutral).</summary>
+        public readonly float DefaultValue;
         public readonly OscParamKind Kind;
 
-        public OscParamSpec(string name, float min, float max, OscParamKind kind)
+        public OscParamSpec(string name, float min, float max, float defaultValue, OscParamKind kind)
         {
             Name = name;
             Min = min;
             Max = max;
+            DefaultValue = defaultValue;
             Kind = kind;
         }
     }
 
     /// <summary>
-    /// Single source of truth for the 10 OSC parameters VRChatCameraOSC sends —
-    /// mirrors <c>PARAM_NAMES</c>/<c>PARAM_RANGES</c> in <c>src/mapping/mod.rs</c>
-    /// (issue #14). Keep these two in sync by hand; there is no automated check
-    /// across the Rust/C# boundary.
+    /// Single source of truth for the OSC parameters this wizard wires —
+    /// since issue #21 these are standard <b>VRCFT Unified Expressions</b>
+    /// <c>v2/*</c> parameters (the subset the tracker drives well from a
+    /// webcam), so a wizard-made avatar is a "lite" face-tracking avatar
+    /// that also works with VRCFaceTracking itself. Mirrors the emission
+    /// table in <c>src/mapping/unified.rs</c>; keep the two in sync by hand
+    /// — there is no automated check across the Rust/C# boundary.
     /// </summary>
     public static class OscParameterSpec
     {
+        /// <summary>VRCFT neutral eyelid value: <c>v2/EyeLid*</c> reads ~0.75
+        /// with a relaxed open eye (0 = closed, 1 = wide). Used both as the
+        /// declared parameter default and as the blend-tree threshold where
+        /// the blink shape reaches weight 0.</summary>
+        public const float EyeLidNeutral = 0.75f;
+
         public static readonly IReadOnlyList<OscParamSpec> All = new[]
         {
-            new OscParamSpec("MouthOpen", 0f, 1f, OscParamKind.BlendShape),
-            new OscParamSpec("EyeBlinkLeft", 0f, 1f, OscParamKind.BlendShape),
-            new OscParamSpec("EyeBlinkRight", 0f, 1f, OscParamKind.BlendShape),
-            new OscParamSpec("BrowUpLeft", 0f, 1f, OscParamKind.BlendShape),
-            new OscParamSpec("BrowUpRight", 0f, 1f, OscParamKind.BlendShape),
-            new OscParamSpec("MouthSmile", 0f, 1f, OscParamKind.BlendShape),
-            new OscParamSpec("MouthWide", -1f, 1f, OscParamKind.SignedBlendShape),
-            new OscParamSpec("HeadRoll", -1f, 1f, OscParamKind.HeadPose),
-            new OscParamSpec("HeadYaw", -1f, 1f, OscParamKind.HeadPose),
-            new OscParamSpec("HeadPitch", -1f, 1f, OscParamKind.HeadPose),
+            new OscParamSpec("v2/EyeLidLeft", 0f, 1f, EyeLidNeutral, OscParamKind.EyeLid),
+            new OscParamSpec("v2/EyeLidRight", 0f, 1f, EyeLidNeutral, OscParamKind.EyeLid),
+            new OscParamSpec("v2/BrowUpLeft", 0f, 1f, 0f, OscParamKind.BlendShape),
+            new OscParamSpec("v2/BrowUpRight", 0f, 1f, 0f, OscParamKind.BlendShape),
+            new OscParamSpec("v2/JawOpen", 0f, 1f, 0f, OscParamKind.BlendShape),
+            new OscParamSpec("v2/MouthSmileLeft", 0f, 1f, 0f, OscParamKind.BlendShape),
+            new OscParamSpec("v2/MouthSmileRight", 0f, 1f, 0f, OscParamKind.BlendShape),
+            new OscParamSpec("v2/MouthStretchLeft", 0f, 1f, 0f, OscParamKind.BlendShape),
+            new OscParamSpec("v2/MouthStretchRight", 0f, 1f, 0f, OscParamKind.BlendShape),
+            new OscParamSpec("v2/Head/Yaw", -1f, 1f, 0f, OscParamKind.HeadPose),
+            new OscParamSpec("v2/Head/Pitch", -1f, 1f, 0f, OscParamKind.HeadPose),
+            new OscParamSpec("v2/Head/Roll", -1f, 1f, 0f, OscParamKind.HeadPose),
+        };
+
+        /// <summary>The retired custom10 parameter names (pre-issue-#21).
+        /// Applying or removing the wizard also cleans these off an avatar
+        /// that was set up by an older version, so re-running the wizard
+        /// migrates it instead of leaving dead parameters behind.</summary>
+        public static readonly IReadOnlyList<string> LegacyNames = new[]
+        {
+            "MouthOpen",
+            "EyeBlinkLeft",
+            "EyeBlinkRight",
+            "BrowUpLeft",
+            "BrowUpRight",
+            "MouthSmile",
+            "MouthWide",
+            "HeadRoll",
+            "HeadYaw",
+            "HeadPitch",
         };
     }
 }

@@ -111,10 +111,10 @@ fn mapper() -> UnifiedMapper {
 fn build_pipeline(watcher: AvatarWatcher) -> (Pipeline, Arc<Mutex<Vec<OscParam>>>) {
     let recorded = Arc::new(Mutex::new(Vec::new()));
     let sink = RecordingSink(recorded.clone());
-    let pipeline = Pipeline::new_arkit(
+    let pipeline = Pipeline::new(
         Box::new(FakeCamera::new(64, 48)),
         Some(Box::new(StubArkitTracker(expressive_frame()))),
-        Box::new(mapper()),
+        mapper(),
         Box::new(sink),
     )
     .with_avatar_watcher(watcher);

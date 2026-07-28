@@ -18,17 +18,15 @@ rosc = "0.11"
 image = "0.25"
 parking_lot = "0.12"
 
-# Inference (pure-Rust) — FAN face-alignment network and the MediaPipe
-# YuNet/FaceMesh V2/Blendshape V2 ONNX stack (issue #17), both ported to
-# candle. Pinned to the `m96-chan/candle` fork (`avatacam` branch): upstream
-# master plus the ONNX ops (`Reciprocal`, `ReduceSum` attr-axes, `Resize`
-# linear, `Pad` constant, `DepthToSpace`) the MediaPipe graphs need. A single
-# candle-core version across the whole project avoids two incompatible copies
-# of its types.
+# Inference (pure-Rust) — the MediaPipe YuNet/FaceMesh V2/Blendshape V2 ONNX
+# stack (issue #17), ported to candle. Pinned to the `m96-chan/candle` fork
+# (`avatacam` branch): upstream master plus the ONNX ops (`Reciprocal`,
+# `ReduceSum` attr-axes, `Resize` linear, `Pad` constant, `DepthToSpace`) the
+# MediaPipe graphs need. A single candle-core version across the whole
+# project avoids two incompatible copies of its types.
 candle-core = { git = "https://github.com/m96-chan/candle", branch = "avatacam" }
 candle-nn = { git = "https://github.com/m96-chan/candle", branch = "avatacam" }
 candle-onnx = { git = "https://github.com/m96-chan/candle", branch = "avatacam" }
-safetensors = "0.8"
 
 # GPU FaceMesh on burn-wgpu (Vulkan/Metal/DX12, driver-only — no CUDA
 # toolkit): candle-onnx's per-op interpreter can't reach 30 FPS for the
@@ -59,12 +57,6 @@ camera = ["dep:nokhwa"]
 # Default ON: it's what makes the MediaPipe backend realtime (30 FPS); the
 # tracker falls back to the CPU stage at runtime when no GPU is usable.
 mesh-gpu = ["dep:burn"]
-# Opt-in GPU inference (issue #13): NOT part of `default` — macOS has no CUDA
-# and most end users won't have an NVIDIA GPU + CUDA toolkit to build against.
-# `Device::cuda_if_available` (used by FanTracker/SfdDetector) already falls
-# back to CPU cleanly when this feature is off or no GPU is found, so this is
-# purely an opt-in speedup, never a requirement.
-cuda = ["candle-core/cuda", "candle-nn/cuda"]
 
 # Camera capture, via nokhwa — backend picked per target OS so each platform
 # only pulls in the native dependency it needs. Optional so the rest of the

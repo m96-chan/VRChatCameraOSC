@@ -34,7 +34,7 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             mesh.vertices = new[] { Vector3.zero, Vector3.up, Vector3.right };
             mesh.triangles = new[] { 0, 1, 2 };
             mesh.AddBlendShapeFrame("Smile", 100f, new Vector3[3], null, null);
-            mesh.AddBlendShapeFrame("Pucker", 100f, new Vector3[3], null, null);
+            mesh.AddBlendShapeFrame("Blink", 100f, new Vector3[3], null, null);
             _renderer.sharedMesh = mesh;
         }
 
@@ -48,51 +48,55 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         [Test]
         public void AddBlendShapeLayer_AddsParameterAndLayer()
         {
-            OscAnimatorLayerBuilder.AddBlendShapeLayer(_controller, _avatarRoot.transform, "MouthOpen", _renderer, "Smile");
+            OscAnimatorLayerBuilder.AddBlendShapeLayer(_controller, _avatarRoot.transform, "v2/JawOpen", _renderer, "Smile");
 
             Assert.IsTrue(_controller.parameters.Any(p =>
-                p.name == "MouthOpen" && p.type == AnimatorControllerParameterType.Float));
-            Assert.IsTrue(_controller.layers.Any(l => l.name == "OSC_MouthOpen"));
+                p.name == "v2/JawOpen" && p.type == AnimatorControllerParameterType.Float));
+            // The Animator *parameter* keeps its slash; layer/asset names are
+            // sanitized (a "/" in an asset name is a path separator).
+            Assert.IsTrue(_controller.layers.Any(l => l.name == "OSC_v2_JawOpen"));
         }
 
         [Test]
         public void AddBlendShapeLayer_ReRunning_ReplacesRatherThanDuplicates()
         {
-            OscAnimatorLayerBuilder.AddBlendShapeLayer(_controller, _avatarRoot.transform, "MouthOpen", _renderer, "Smile");
-            OscAnimatorLayerBuilder.AddBlendShapeLayer(_controller, _avatarRoot.transform, "MouthOpen", _renderer, "Smile");
+            OscAnimatorLayerBuilder.AddBlendShapeLayer(_controller, _avatarRoot.transform, "v2/JawOpen", _renderer, "Smile");
+            OscAnimatorLayerBuilder.AddBlendShapeLayer(_controller, _avatarRoot.transform, "v2/JawOpen", _renderer, "Smile");
 
-            Assert.AreEqual(1, _controller.layers.Count(l => l.name == "OSC_MouthOpen"));
-            Assert.AreEqual(1, _controller.parameters.Count(p => p.name == "MouthOpen"));
+            Assert.AreEqual(1, _controller.layers.Count(l => l.name == "OSC_v2_JawOpen"));
+            Assert.AreEqual(1, _controller.parameters.Count(p => p.name == "v2/JawOpen"));
         }
 
         [Test]
-        public void AddSignedBlendShapeLayer_WithBothShapes_AddsOneLayer()
+        public void AddEyeLidLayer_AddsInvertedBlendTree_Closed100AtZero_Open0AtNeutral()
         {
-            OscAnimatorLayerBuilder.AddSignedBlendShapeLayer(
-                _controller, _avatarRoot.transform, "MouthWide", _renderer, "Smile", _renderer, "Pucker");
+            // VRCFT v2/EyeLid* semantics: 0 = closed, 0.75 = relaxed open.
+            // The blink shape must be at weight 100 for parameter 0 and reach
+            // weight 0 at the neutral threshold (clamped to 0 above it).
+            OscAnimatorLayerBuilder.AddEyeLidLayer(_controller, _avatarRoot.transform, "v2/EyeLidLeft", _renderer, "Blink");
 
-            Assert.IsTrue(_controller.parameters.Any(p => p.name == "MouthWide"));
-            Assert.IsTrue(_controller.layers.Any(l => l.name == "OSC_MouthWide"));
-        }
+            var layer = _controller.layers.First(l => l.name == "OSC_v2_EyeLidLeft");
+            var tree = (BlendTree)layer.stateMachine.states.Single().state.motion;
 
-        [Test]
-        public void AddSignedBlendShapeLayer_NegativeShapeOptional_DoesNotThrow()
-        {
-            Assert.DoesNotThrow(() =>
-                OscAnimatorLayerBuilder.AddSignedBlendShapeLayer(
-                    _controller, _avatarRoot.transform, "MouthWide", _renderer, "Smile", null, null));
+            Assert.AreEqual("v2/EyeLidLeft", tree.blendParameter);
+            Assert.AreEqual(2, tree.children.Length);
+            Assert.AreEqual(0f, tree.children[0].threshold, 1e-6f);
+            Assert.AreEqual(OscParameterSpec.EyeLidNeutral, tree.children[1].threshold, 1e-6f);
 
-            Assert.IsTrue(_controller.layers.Any(l => l.name == "OSC_MouthWide"));
+            // Child 0 (param = 0, closed) carries the weight-100 clip; child 1
+            // (param = neutral) the weight-0 clip. Clip naming encodes weight.
+            StringAssert.EndsWith("_100", tree.children[0].motion.name);
+            StringAssert.EndsWith("_0", tree.children[1].motion.name);
         }
 
         [Test]
         public void AddHeadPoseLayer_UsesAdditiveBlending()
         {
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadRoll", "Head Tilt Left-Right");
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
 
-            var layer = _controller.layers.First(l => l.name == "OSC_HeadRoll");
+            var layer = _controller.layers.First(l => l.name == "OSC_v2_Head_Roll");
             Assert.AreEqual(AnimatorLayerBlendingMode.Additive, layer.blendingMode);
-            Assert.IsTrue(_controller.parameters.Any(p => p.name == "HeadRoll"));
+            Assert.IsTrue(_controller.parameters.Any(p => p.name == "v2/Head/Roll"));
         }
 
         [Test]
@@ -104,9 +108,9 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             // a visible spin under real (continuous, jittery) OSC head data
             // even though a single static parameter scrub looks harmless.
             // The mask must contain the layer's effect to Head only.
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadRoll", "Head Tilt Left-Right");
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
 
-            var layer = _controller.layers.First(l => l.name == "OSC_HeadRoll");
+            var layer = _controller.layers.First(l => l.name == "OSC_v2_Head_Roll");
             Assert.IsNotNull(layer.avatarMask, "head-pose layer must have a mask");
             Assert.IsTrue(layer.avatarMask.GetHumanoidBodyPartActive(AvatarMaskBodyPart.Head));
             Assert.IsFalse(layer.avatarMask.GetHumanoidBodyPartActive(AvatarMaskBodyPart.Body));
@@ -119,12 +123,12 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         [Test]
         public void AddHeadPoseLayer_SharesOneMaskAcrossAllThreeAxes()
         {
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadRoll", "Head Tilt Left-Right");
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadYaw", "Head Turn Left-Right");
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadPitch", "Head Nod Down-Up");
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Yaw", "Head Turn Left-Right");
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Pitch", "Head Nod Down-Up");
 
             var masks = _controller.layers
-                .Where(l => l.name.StartsWith("OSC_Head"))
+                .Where(l => l.name.StartsWith("OSC_v2_Head"))
                 .Select(l => l.avatarMask)
                 .ToArray();
             Assert.AreEqual(3, masks.Length);
@@ -140,9 +144,9 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             // VRCAnimatorTrackingControl with trackingHead = Animation makes
             // this layer's muscle curves win. Every other tracked part must
             // stay NoChange so this layer never stomps on hands/eyes/etc.
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadRoll", "Head Tilt Left-Right");
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
 
-            var layer = _controller.layers.First(l => l.name == "OSC_HeadRoll");
+            var layer = _controller.layers.First(l => l.name == "OSC_v2_Head_Roll");
             var state = layer.stateMachine.states.Single().state;
             var behaviours = state.behaviours.OfType<VRCAnimatorTrackingControl>().ToArray();
 
@@ -165,9 +169,9 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         {
             // Only head-pose layers need VRCAnimatorTrackingControl; blend
             // shape layers must be left alone.
-            OscAnimatorLayerBuilder.AddBlendShapeLayer(_controller, _avatarRoot.transform, "MouthOpen", _renderer, "Smile");
+            OscAnimatorLayerBuilder.AddBlendShapeLayer(_controller, _avatarRoot.transform, "v2/JawOpen", _renderer, "Smile");
 
-            var layer = _controller.layers.First(l => l.name == "OSC_MouthOpen");
+            var layer = _controller.layers.First(l => l.name == "OSC_v2_JawOpen");
             var state = layer.stateMachine.states.Single().state;
             Assert.IsEmpty(state.behaviours);
         }
@@ -175,9 +179,9 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         [Test]
         public void RemoveLayer_HeadPoseLayer_LeavesNoOrphanedTrackingControlAsset()
         {
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadRoll", "Head Tilt Left-Right");
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
 
-            OscAnimatorLayerBuilder.RemoveLayer(_controller, "HeadRoll");
+            OscAnimatorLayerBuilder.RemoveLayer(_controller, "v2/Head/Roll");
 
             var orphaned = AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(_controller))
                 .OfType<VRCAnimatorTrackingControl>()
@@ -188,20 +192,20 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         [Test]
         public void RemoveLayer_KeepsSharedMask_WhileOtherHeadLayersStillUseIt()
         {
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadRoll", "Head Tilt Left-Right");
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadYaw", "Head Turn Left-Right");
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Yaw", "Head Turn Left-Right");
 
-            OscAnimatorLayerBuilder.RemoveLayer(_controller, "HeadRoll");
+            OscAnimatorLayerBuilder.RemoveLayer(_controller, "v2/Head/Roll");
 
-            var remaining = _controller.layers.First(l => l.name == "OSC_HeadYaw");
+            var remaining = _controller.layers.First(l => l.name == "OSC_v2_Head_Yaw");
             Assert.IsNotNull(remaining.avatarMask, "surviving layer's mask must not have been destroyed");
         }
 
         [Test]
         public void RemoveLayer_CleansUpSharedMask_OnceNoLayerReferencesIt()
         {
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadRoll", "Head Tilt Left-Right");
-            OscAnimatorLayerBuilder.RemoveLayer(_controller, "HeadRoll");
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
+            OscAnimatorLayerBuilder.RemoveLayer(_controller, "v2/Head/Roll");
 
             var maskStillInAsset = AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(_controller))
                 .OfType<AvatarMask>()
@@ -212,105 +216,100 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         [Test]
         public void RemoveLayer_IsTheInverseOfAdd_LeavesOtherLayersAlone()
         {
-            OscAnimatorLayerBuilder.AddBlendShapeLayer(_controller, _avatarRoot.transform, "MouthOpen", _renderer, "Smile");
-            OscAnimatorLayerBuilder.AddBlendShapeLayer(_controller, _avatarRoot.transform, "MouthSmile", _renderer, "Smile");
+            OscAnimatorLayerBuilder.AddBlendShapeLayer(_controller, _avatarRoot.transform, "v2/JawOpen", _renderer, "Smile");
+            OscAnimatorLayerBuilder.AddBlendShapeLayer(_controller, _avatarRoot.transform, "v2/MouthSmileLeft", _renderer, "Smile");
 
-            Assert.IsTrue(OscAnimatorLayerBuilder.HasLayer(_controller, "MouthOpen"));
-            var removed = OscAnimatorLayerBuilder.RemoveLayer(_controller, "MouthOpen");
+            Assert.IsTrue(OscAnimatorLayerBuilder.HasLayer(_controller, "v2/JawOpen"));
+            var removed = OscAnimatorLayerBuilder.RemoveLayer(_controller, "v2/JawOpen");
 
             Assert.IsTrue(removed);
-            Assert.IsFalse(OscAnimatorLayerBuilder.HasLayer(_controller, "MouthOpen"));
-            Assert.IsFalse(_controller.parameters.Any(p => p.name == "MouthOpen"));
+            Assert.IsFalse(OscAnimatorLayerBuilder.HasLayer(_controller, "v2/JawOpen"));
+            Assert.IsFalse(_controller.parameters.Any(p => p.name == "v2/JawOpen"));
             // The other parameter's layer must survive untouched.
-            Assert.IsTrue(OscAnimatorLayerBuilder.HasLayer(_controller, "MouthSmile"));
-            Assert.IsTrue(_controller.parameters.Any(p => p.name == "MouthSmile"));
+            Assert.IsTrue(OscAnimatorLayerBuilder.HasLayer(_controller, "v2/MouthSmileLeft"));
+            Assert.IsTrue(_controller.parameters.Any(p => p.name == "v2/MouthSmileLeft"));
         }
 
         [Test]
         public void RemoveLayer_WhenAbsent_ReturnsFalseAndDoesNotThrow()
         {
-            Assert.IsFalse(OscAnimatorLayerBuilder.HasLayer(_controller, "MouthOpen"));
-            Assert.IsFalse(OscAnimatorLayerBuilder.RemoveLayer(_controller, "MouthOpen"));
+            Assert.IsFalse(OscAnimatorLayerBuilder.HasLayer(_controller, "v2/JawOpen"));
+            Assert.IsFalse(OscAnimatorLayerBuilder.RemoveLayer(_controller, "v2/JawOpen"));
         }
 
         [Test]
-        public void RemoveLayer_WorksForSignedBlendShapeWithSharedZeroClip()
+        public void RemoveLayer_WorksForEyeLidLayer()
         {
-            // The zero clip is reused across the -1/0 (and possibly 1) children;
-            // removal must not double-destroy it.
-            OscAnimatorLayerBuilder.AddSignedBlendShapeLayer(
-                _controller, _avatarRoot.transform, "MouthWide", _renderer, "Smile", null, null);
+            OscAnimatorLayerBuilder.AddEyeLidLayer(_controller, _avatarRoot.transform, "v2/EyeLidLeft", _renderer, "Blink");
 
-            Assert.DoesNotThrow(() => OscAnimatorLayerBuilder.RemoveLayer(_controller, "MouthWide"));
-            Assert.IsFalse(OscAnimatorLayerBuilder.HasLayer(_controller, "MouthWide"));
+            Assert.IsTrue(OscAnimatorLayerBuilder.RemoveLayer(_controller, "v2/EyeLidLeft"));
+            Assert.IsFalse(OscAnimatorLayerBuilder.HasLayer(_controller, "v2/EyeLidLeft"));
         }
 
         [Test]
         public void RemoveLayer_WorksForHeadPoseLayer()
         {
-            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "HeadRoll", "Head Tilt Left-Right");
+            OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, "v2/Head/Roll", "Head Tilt Left-Right");
 
-            Assert.IsTrue(OscAnimatorLayerBuilder.RemoveLayer(_controller, "HeadRoll"));
-            Assert.IsFalse(OscAnimatorLayerBuilder.HasLayer(_controller, "HeadRoll"));
+            Assert.IsTrue(OscAnimatorLayerBuilder.RemoveLayer(_controller, "v2/Head/Roll"));
+            Assert.IsFalse(OscAnimatorLayerBuilder.HasLayer(_controller, "v2/Head/Roll"));
         }
 
         [Test]
-        public void AllTenParameters_CanBeWiredWithoutError()
+        public void RemoveLayer_LegacyCustom10Name_StillWorks_ForMigration()
+        {
+            // RemoveLegacyCustom10 (issue #21) relies on RemoveLayer working
+            // for the retired slash-less names.
+            OscAnimatorLayerBuilder.AddBlendShapeLayer(_controller, _avatarRoot.transform, "MouthOpen", _renderer, "Smile");
+
+            Assert.IsTrue(OscAnimatorLayerBuilder.HasLayer(_controller, "MouthOpen"));
+            Assert.IsTrue(OscAnimatorLayerBuilder.RemoveLayer(_controller, "MouthOpen"));
+            Assert.IsFalse(OscAnimatorLayerBuilder.HasLayer(_controller, "MouthOpen"));
+        }
+
+        static void WireAll(AnimatorController controller, Transform root, SkinnedMeshRenderer renderer)
         {
             foreach (var spec in OscParameterSpec.All)
             {
                 switch (spec.Kind)
                 {
                     case OscParamKind.BlendShape:
-                        OscAnimatorLayerBuilder.AddBlendShapeLayer(_controller, _avatarRoot.transform, spec.Name, _renderer, "Smile");
+                        OscAnimatorLayerBuilder.AddBlendShapeLayer(controller, root, spec.Name, renderer, "Smile");
                         break;
-                    case OscParamKind.SignedBlendShape:
-                        OscAnimatorLayerBuilder.AddSignedBlendShapeLayer(
-                            _controller, _avatarRoot.transform, spec.Name, _renderer, "Smile", _renderer, "Pucker");
+                    case OscParamKind.EyeLid:
+                        OscAnimatorLayerBuilder.AddEyeLidLayer(controller, root, spec.Name, renderer, "Blink");
                         break;
                     case OscParamKind.HeadPose:
-                        var muscle = spec.Name == "HeadRoll" ? "Head Tilt Left-Right"
-                            : spec.Name == "HeadYaw" ? "Head Turn Left-Right"
+                        var muscle = spec.Name == "v2/Head/Roll" ? "Head Tilt Left-Right"
+                            : spec.Name == "v2/Head/Yaw" ? "Head Turn Left-Right"
                             : "Head Nod Down-Up";
-                        OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, spec.Name, muscle);
+                        OscAnimatorLayerBuilder.AddHeadPoseLayer(controller, spec.Name, muscle);
                         break;
                 }
             }
+        }
 
-            Assert.AreEqual(10, _controller.parameters.Length);
+        [Test]
+        public void AllParameters_CanBeWiredWithoutError()
+        {
+            WireAll(_controller, _avatarRoot.transform, _renderer);
+
+            Assert.AreEqual(OscParameterSpec.All.Count, _controller.parameters.Length);
             // CreateAnimatorControllerAtPath seeds one default "Base Layer";
             // AddLayer only ever replaces layers it owns (named "OSC_*").
-            Assert.AreEqual(10, _controller.layers.Count(l => l.name.StartsWith("OSC_")));
+            Assert.AreEqual(OscParameterSpec.All.Count, _controller.layers.Count(l => l.name.StartsWith("OSC_")));
             foreach (var spec in OscParameterSpec.All)
             {
                 Assert.IsTrue(
-                    _controller.layers.Any(l => l.name == "OSC_" + spec.Name),
+                    OscAnimatorLayerBuilder.HasLayer(_controller, spec.Name),
                     $"missing layer for {spec.Name}");
             }
         }
 
         [Test]
-        public void WireThenRemoveAllTen_RoundTripsBackToZero()
+        public void WireThenRemoveAll_RoundTripsBackToZero()
         {
-            foreach (var spec in OscParameterSpec.All)
-            {
-                switch (spec.Kind)
-                {
-                    case OscParamKind.BlendShape:
-                        OscAnimatorLayerBuilder.AddBlendShapeLayer(_controller, _avatarRoot.transform, spec.Name, _renderer, "Smile");
-                        break;
-                    case OscParamKind.SignedBlendShape:
-                        OscAnimatorLayerBuilder.AddSignedBlendShapeLayer(
-                            _controller, _avatarRoot.transform, spec.Name, _renderer, "Smile", _renderer, "Pucker");
-                        break;
-                    case OscParamKind.HeadPose:
-                        var muscle = spec.Name == "HeadRoll" ? "Head Tilt Left-Right"
-                            : spec.Name == "HeadYaw" ? "Head Turn Left-Right"
-                            : "Head Nod Down-Up";
-                        OscAnimatorLayerBuilder.AddHeadPoseLayer(_controller, spec.Name, muscle);
-                        break;
-                }
-            }
+            WireAll(_controller, _avatarRoot.transform, _renderer);
 
             foreach (var spec in OscParameterSpec.All)
             {

@@ -10,12 +10,15 @@ namespace VRChatCameraOsc.AvatarSetup
 {
     /// <summary>
     /// Builds Animator Controller layers that drive an existing blend shape
-    /// or the Humanoid head bone from one of the 10 OSC float parameters
-    /// (issue #16). Blend-shape layers go in the FX controller;
+    /// or the Humanoid head bone from one of the wizard's OSC float
+    /// parameters (issue #16). Blend-shape layers go in the FX controller;
     /// <see cref="AddHeadPoseLayer"/> goes in the Gesture controller instead
     /// (see its doc comment for why). Each parameter gets its own layer,
-    /// named <c>OSC_&lt;ParamName&gt;</c>, so re-running the wizard replaces
-    /// rather than duplicates.
+    /// named <c>OSC_&lt;ParamName&gt;</c> (with <c>/</c> replaced by
+    /// <c>_</c> — <c>v2/Head/Yaw</c> parameters keep their slash on the
+    /// Animator *parameter*, but layer/state/clip asset names must not
+    /// contain path separators), so re-running the wizard replaces rather
+    /// than duplicates.
     ///
     /// Deliberately Animator-only: VRChat strips arbitrary MonoBehaviours from
     /// uploaded avatars, so nothing here can be a runtime script — see the
@@ -24,6 +27,9 @@ namespace VRChatCameraOsc.AvatarSetup
     public static class OscAnimatorLayerBuilder
     {
         const float BlendShapeFullWeight = 100f;
+
+        /// <summary><c>OSC_*</c> layer/asset name for a parameter, slash-safe.</summary>
+        static string LayerNameFor(string paramName) => "OSC_" + paramName.Replace('/', '_');
 
         /// <summary>0..1 parameter driving a single blend shape from 0 to 100.</summary>
         public static void AddBlendShapeLayer(
@@ -40,42 +46,24 @@ namespace VRChatCameraOsc.AvatarSetup
         }
 
         /// <summary>
-        /// -1..1 parameter. <paramref name="negativeRenderer"/>/<paramref name="negativeBlendShape"/>
-        /// may be null to leave the negative half undriven (common: many
-        /// avatars only have a "wide/smile" shape, not a "pucker" one).
+        /// A VRCFT <c>v2/EyeLid*</c> parameter (0 = closed, ~0.75 = relaxed
+        /// open, 1 = wide) driving a *blink/close* blend shape — the mapping
+        /// is inverted: shape weight 100 at parameter 0, weight 0 at
+        /// <see cref="OscParameterSpec.EyeLidNeutral"/>. Above the neutral
+        /// threshold Simple1D clamps to the last child, so 0.75..1 (eye-wide
+        /// territory) keeps the blink shape at 0 — avatars with an eye-wide
+        /// shape can wire it manually later; most don't have one.
         /// </summary>
-        public static void AddSignedBlendShapeLayer(
+        public static void AddEyeLidLayer(
             AnimatorController controller,
             Transform avatarRoot,
             string paramName,
-            SkinnedMeshRenderer positiveRenderer,
-            string positiveBlendShape,
-            SkinnedMeshRenderer negativeRenderer,
-            string negativeBlendShape)
+            SkinnedMeshRenderer renderer,
+            string blendShapeName)
         {
             var tree = NewTree(controller, paramName, BlendTreeType.Simple1D);
-            var zero = ZeroClip(controller, paramName);
-
-            if (negativeRenderer != null && !string.IsNullOrEmpty(negativeBlendShape))
-            {
-                tree.AddChild(BlendShapeClip(controller, avatarRoot, negativeRenderer, negativeBlendShape, BlendShapeFullWeight), -1f);
-            }
-            else
-            {
-                tree.AddChild(zero, -1f);
-            }
-
-            tree.AddChild(zero, 0f);
-
-            if (positiveRenderer != null && !string.IsNullOrEmpty(positiveBlendShape))
-            {
-                tree.AddChild(BlendShapeClip(controller, avatarRoot, positiveRenderer, positiveBlendShape, BlendShapeFullWeight), 1f);
-            }
-            else
-            {
-                tree.AddChild(zero, 1f);
-            }
-
+            tree.AddChild(BlendShapeClip(controller, avatarRoot, renderer, blendShapeName, BlendShapeFullWeight), 0f);
+            tree.AddChild(BlendShapeClip(controller, avatarRoot, renderer, blendShapeName, 0f), OscParameterSpec.EyeLidNeutral);
             AddLayer(controller, paramName, tree, AnimatorLayerBlendingMode.Override, null);
         }
 
@@ -172,7 +160,7 @@ namespace VRChatCameraOsc.AvatarSetup
         /// "ON" state the wizard's toggle button reads to decide Apply vs. Remove.</summary>
         public static bool HasLayer(AnimatorController controller, string paramName)
         {
-            return controller != null && controller.layers.Any(l => l.name == $"OSC_{paramName}");
+            return controller != null && controller.layers.Any(l => l.name == LayerNameFor(paramName));
         }
 
         /// <summary>
@@ -183,7 +171,7 @@ namespace VRChatCameraOsc.AvatarSetup
         /// </summary>
         public static bool RemoveLayer(AnimatorController controller, string paramName)
         {
-            var layerName = $"OSC_{paramName}";
+            var layerName = LayerNameFor(paramName);
             var layers = controller.layers.ToList();
             var index = layers.FindIndex(l => l.name == layerName);
             if (index < 0)
@@ -262,7 +250,7 @@ namespace VRChatCameraOsc.AvatarSetup
             EnsureFloatParameter(controller, paramName);
             var tree = new BlendTree
             {
-                name = $"OSC_{paramName}",
+                name = LayerNameFor(paramName),
                 blendType = type,
                 blendParameter = paramName,
             };
@@ -291,7 +279,7 @@ namespace VRChatCameraOsc.AvatarSetup
             AvatarMask mask,
             System.Action<AnimatorState> configureState = null)
         {
-            var layerName = $"OSC_{paramName}";
+            var layerName = LayerNameFor(paramName);
             var layers = controller.layers.ToList();
             var existingIndex = layers.FindIndex(l => l.name == layerName);
             if (existingIndex >= 0)
@@ -325,7 +313,7 @@ namespace VRChatCameraOsc.AvatarSetup
             string blendShapeName,
             float weight)
         {
-            var clip = new AnimationClip { name = $"{renderer.name}_{blendShapeName}_{weight:0}" };
+            var clip = new AnimationClip { name = $"{renderer.name}_{blendShapeName}_{weight:0}".Replace('/', '_') };
             var path = AnimationUtility.CalculateTransformPath(renderer.transform, avatarRoot);
             var binding = EditorCurveBinding.FloatCurve(path, typeof(SkinnedMeshRenderer), "blendShape." + blendShapeName);
             AnimationUtility.SetEditorCurve(clip, binding, AnimationCurve.Constant(0f, 0f, weight));
@@ -346,16 +334,9 @@ namespace VRChatCameraOsc.AvatarSetup
 
         static AnimationClip MuscleClip(AnimatorController controller, string paramName, string muscleName, float value)
         {
-            var clip = new AnimationClip { name = $"OSC_{paramName}_{value:0.##}" };
+            var clip = new AnimationClip { name = $"{LayerNameFor(paramName)}_{value:0.##}" };
             var binding = EditorCurveBinding.FloatCurve(string.Empty, typeof(Animator), muscleName);
             AnimationUtility.SetEditorCurve(clip, binding, AnimationCurve.Linear(0f, 0f, AdditiveReferenceRampSeconds, value));
-            AssetDatabase.AddObjectToAsset(clip, controller);
-            return clip;
-        }
-
-        static AnimationClip ZeroClip(AnimatorController controller, string paramName)
-        {
-            var clip = new AnimationClip { name = $"OSC_{paramName}_zero" };
             AssetDatabase.AddObjectToAsset(clip, controller);
             return clip;
         }

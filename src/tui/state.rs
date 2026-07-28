@@ -14,7 +14,7 @@ pub enum Tab {
     Status,
     /// Live tracked landmark / parameter values.
     Values,
-    /// In-app configuration (OSC host/port, smoothing, dry-run).
+    /// In-app configuration (OSC host/port, dry-run).
     Config,
 }
 
@@ -59,21 +59,17 @@ pub enum ConfigField {
     Host,
     /// OSC destination UDP port.
     Port,
-    /// Exponential smoothing factor (0..=1).
-    Smoothing,
 }
 
 impl ConfigField {
     /// All fields in cursor order.
-    pub const ALL: [ConfigField; 3] =
-        [ConfigField::Host, ConfigField::Port, ConfigField::Smoothing];
+    pub const ALL: [ConfigField; 2] = [ConfigField::Host, ConfigField::Port];
 
     /// Label shown next to the field.
     pub fn label(self) -> &'static str {
         match self {
             ConfigField::Host => "Host",
             ConfigField::Port => "Port",
-            ConfigField::Smoothing => "Smoothing",
         }
     }
 
@@ -81,7 +77,6 @@ impl ConfigField {
         match self {
             ConfigField::Host => 0,
             ConfigField::Port => 1,
-            ConfigField::Smoothing => 2,
         }
     }
 
@@ -93,9 +88,6 @@ impl ConfigField {
         ConfigField::ALL[(self.index() + ConfigField::ALL.len() - 1) % ConfigField::ALL.len()]
     }
 }
-
-/// How much a single `+`/`-` nudges the smoothing factor.
-const SMOOTHING_STEP: f32 = 0.05;
 
 /// Render-independent UI state: status, live values, and config view.
 ///
@@ -125,8 +117,6 @@ pub struct UiState {
     pub host: String,
     /// OSC destination port being edited.
     pub port: u16,
-    /// Smoothing factor being edited (clamped to 0..=1).
-    pub smoothing: f32,
     /// Dry-run: monitor only, do not actually send OSC.
     pub dry_run: bool,
     /// Config field under the edit cursor.
@@ -148,7 +138,6 @@ impl Default for UiState {
             live_values: Vec::new(),
             host: "127.0.0.1".to_string(),
             port: 9000,
-            smoothing: 0.5,
             dry_run: false,
             selected_field: ConfigField::default(),
             recalibrate_requested: false,
@@ -190,11 +179,6 @@ impl UiState {
         self.port = port;
     }
 
-    /// Set the smoothing factor, clamped to `0.0..=1.0`.
-    pub fn set_smoothing(&mut self, smoothing: f32) {
-        self.smoothing = smoothing.clamp(0.0, 1.0);
-    }
-
     /// The OSC destination formatted as `host:port`.
     pub fn osc_target(&self) -> String {
         format!("{}:{}", self.host, self.port)
@@ -211,8 +195,8 @@ impl UiState {
     /// - `Up`/`Down` move the Config field cursor.
     /// - `d` toggles dry-run.
     /// - `c` requests a neutral-pose recalibration (the app loop performs it).
-    /// - On Config: type into the selected field (`Host` text, `Port` digits,
-    ///   `Smoothing` `+`/`-`), `Backspace` erases.
+    /// - On Config: type into the selected field (`Host` text, `Port`
+    ///   digits), `Backspace` erases.
     pub fn on_key(&mut self, key: KeyCode) {
         match key {
             KeyCode::Char('q') => self.should_quit = true,
@@ -243,7 +227,6 @@ impl UiState {
                 self.host.pop();
             }
             ConfigField::Port => self.port /= 10,
-            ConfigField::Smoothing => {}
         }
     }
 
@@ -267,11 +250,6 @@ impl UiState {
                     self.port = next.min(u16::MAX as u32) as u16;
                 }
             }
-            ConfigField::Smoothing => match c {
-                '+' => self.set_smoothing(self.smoothing + SMOOTHING_STEP),
-                '-' => self.set_smoothing(self.smoothing - SMOOTHING_STEP),
-                _ => {}
-            },
         }
     }
 }

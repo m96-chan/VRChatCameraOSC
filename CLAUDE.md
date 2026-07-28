@@ -42,10 +42,11 @@ OSC. No GUI window; everything runs in a TUI.
   `unity/README.md`, its own Unity Test Framework tests
   (`unity/VRChatCameraOSC/Tests/Editor/`), and its own build/verify loop
   (Unity Editor batch mode — `-runTests -testPlatform EditMode`), not
-  `cargo`. Its 10-parameter spec
-  (`unity/VRChatCameraOSC/Editor/OscParameterSpec.cs`) must be kept in sync
-  by hand with `src/mapping/mod.rs` — there is no automated check across the
-  Rust/C# boundary.
+  `cargo`. Its parameter spec
+  (`unity/VRChatCameraOSC/Editor/OscParameterSpec.cs` — the wizard's subset
+  of the VRCFT Unified Expressions `v2/*` set, issue #21) must be kept in
+  sync by hand with `src/mapping/unified.rs` — there is no automated check
+  across the Rust/C# boundary.
 
 ## Development rules (must follow)
 

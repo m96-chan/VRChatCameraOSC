@@ -1,18 +1,25 @@
 # VRChatCameraOSC Avatar Setup (Unity SDK)
 
 Editor wizard for VRChat SDK3 that wires a **Humanoid** avatar's existing
-blend shapes and head bone to the 10 OSC parameters
-[VRChatCameraOSC](../README.md) sends (issue [#16](https://github.com/m96-chan/VRChatCameraOSC/issues/16)).
+blend shapes and head bone to the standard **VRCFT (Unified Expressions)
+`v2/*` parameters** [VRChatCameraOSC](../README.md) sends (issues
+[#16](https://github.com/m96-chan/VRChatCameraOSC/issues/16),
+[#21](https://github.com/m96-chan/VRChatCameraOSC/issues/21)) — turning it
+into a "lite" face-tracking avatar.
 
 > **You may not need this wizard at all.** If your avatar already supports
 > **VRCFaceTracking / Unified Expressions** (most commercial
-> face-tracking-ready avatars do), run the tracker with `--mapping vrcft`
-> instead: it emits the same `v2/` parameters VRCFaceTracking sends, and the
-> avatar works with **no Unity work whatsoever** (issue
-> [#18](https://github.com/m96-chan/VRChatCameraOSC/issues/18); float
-> parameters only for now — avatars whose FT parameters are exclusively
-> *binary* still need VRCFT phase 2, and non-FT avatars still need this
-> wizard). See ["Avatar setup" in the main README](../README.md#avatar-setup-required-for-the-avatar-to-actually-move).
+> face-tracking-ready avatars do), just run the tracker: it emits the same
+> `v2/` parameters VRCFaceTracking sends — float, bool, and binary forms,
+> gated to what the avatar declares — and the avatar works with **no Unity
+> work whatsoever** (issue
+> [#18](https://github.com/m96-chan/VRChatCameraOSC/issues/18)). This wizard
+> is for avatars with plain blend shapes and no face-tracking setup. See
+> ["Avatar setup" in the main README](../README.md#avatar-setup-required-for-the-avatar-to-actually-move).
+
+Because the wizard declares standard `v2/*` names, a wizard-made avatar also
+works with **VRCFaceTracking itself** (e.g. an iPhone LiveLink module) — not
+only with this app.
 
 ## What this is — and isn't
 
@@ -25,14 +32,38 @@ FX/Gesture Animator Controller layers (blend shapes → FX, head pose →
 Gesture — [why](#why-head-pose-lives-on-the-gesture-layer-not-fx)) so
 VRChat's existing OSC-to-parameter routing has something to drive.
 
+The parameters wired (the webcam-trackable subset of Unified Expressions,
+mirroring `src/mapping/unified.rs`):
+
+| Parameter | Range | Default | Drives |
+|---|---|---|---|
+| `v2/EyeLidLeft` / `v2/EyeLidRight` | `0..1` | **0.75** | blink shape, **inverted** (0 = closed, 0.75 = relaxed open, 1 = wide) |
+| `v2/BrowUpLeft` / `v2/BrowUpRight` | `0..1` | 0 | brow-raise shape |
+| `v2/JawOpen` | `0..1` | 0 | mouth-open shape |
+| `v2/MouthSmileLeft` / `v2/MouthSmileRight` | `0..1` | 0 | smile shape (shared shape OK) |
+| `v2/MouthStretchLeft` / `v2/MouthStretchRight` | `0..1` | 0 | mouth-widen shape (shared shape OK) |
+| `v2/Head/Yaw` / `v2/Head/Pitch` / `v2/Head/Roll` | `-1..1` | 0 | Humanoid head muscles (additive Gesture layer) |
+
+The `v2/EyeLid*` **0.75 default** matters: with the inverted VRCFT eyelid
+semantics, a 0 default would leave the avatar's eyes shut whenever no tracker
+is running. Declared at 0.75 the avatar rests with open eyes (issue #21).
+
 It does **not**:
 - Create blend shapes — pick from ones your mesh already has.
 - Run at avatar runtime. VRChat strips arbitrary `MonoBehaviour`s from
-  uploaded avatars, so `HeadRoll`/`HeadYaw`/`HeadPitch` are driven the same
-  way as the blend-shape parameters: through an **additive** Animator layer
-  using Humanoid muscle curves (`Head Tilt Left-Right` / `Head Turn
-  Left-Right` / `Head Nod Down-Up`), never a script on the avatar.
+  uploaded avatars, so `v2/Head/*` are driven the same way as the
+  blend-shape parameters: through an **additive** Animator layer using
+  Humanoid muscle curves (`Head Tilt Left-Right` / `Head Turn Left-Right` /
+  `Head Nod Down-Up`), never a script on the avatar.
 - Support non-Humanoid (generic) rigs — out of scope for now.
+
+### Migrating from the retired custom10 setup
+
+Avatars set up by a pre-issue-#21 version of this wizard carry the retired
+`MouthOpen`/`EyeBlink*`/`Head*` parameters. Just re-run **Apply**: it strips
+every legacy parameter and `OSC_*` layer first, then wires the `v2/*` set —
+one click migrates in place. **Remove** also cleans both generations.
+Re-upload the avatar afterwards.
 
 ### Why head pose lives on the Gesture layer, not FX
 
@@ -70,12 +101,6 @@ Assets" sample) as a starting point, so existing default hand gestures
 instead and the Apply dialog says so — you'll need to set up hand gestures
 manually in that case.
 
-Avatars set up by an older version of this wizard (head pose in FX) are
-migrated automatically: re-running Apply removes the old FX-based head
-layers as it adds the new Gesture-based ones, and Remove cleans up both
-locations regardless of which version applied them — so the wizard's
-ON/OFF toggle reads correctly either way.
-
 ## Install
 
 Distributed as a plain `Assets/`-folder drop-in (`.unitypackage`), not a UPM
@@ -107,41 +132,40 @@ folder in first.)
    from Body mesh"** button — it only fills pickers still on `(skip)`, so it
    never overwrites a manual choice.
 3. **Review every picker** — auto-fill is a guess, not a guarantee. For each
-   expression parameter (`MouthOpen`, `EyeBlinkLeft`, `EyeBlinkRight`,
-   `BrowUpLeft`, `BrowUpRight`, `MouthSmile`, `MouthWide`), confirm or change
-   the `SkinnedMeshRenderer` + blend shape, or set it to `(skip)`. `MouthWide`
-   is signed (`-1..1`): a positive shape (wide/grin) and an optional negative
-   shape (pucker) — leaving the negative one on `(skip)` is fine if your
-   avatar doesn't have one.
+   expression parameter, confirm or change the `SkinnedMeshRenderer` + blend
+   shape, or set it to `(skip)`. The `v2/EyeLid*` pickers take your **blink /
+   eye-close** shape — the wizard generates the inverted mapping (shape at
+   100 when the parameter reads 0/closed) for you. Left/Right pairs without
+   L/R-split shapes on the mesh can both point at the same shared shape.
 4. Leave "wire head pose" checked (default) to also drive the head bone (on
    the Gesture layer — see [above](#why-head-pose-lives-on-the-gesture-layer-not-fx)).
    Note the caveat: while this is wired, VRChat's own head control (e.g.
    Desktop mouse-look) no longer moves the avatar's head.
 5. If your avatar has VRChat's native **Eyelids** (Eye Look → Eyelids, auto
    blink/eye-tracking) set to Blendshapes or Bones *and* you wired
-   `EyeBlinkLeft`/`EyeBlinkRight`, a checkbox appears to disable it — leave it
-   checked. Otherwise VRChat's own automatic blink independently opens/closes
-   its own eyelid shape (often a *different* shape than the one driven by
-   OSC, e.g. a shared `vrc.blink`) on its own timer, fighting with — and
-   sometimes fully masking — the OSC-driven blink. This is exactly what
-   caused a real report of "eyes stuck closed" despite `EyeBlinkLeft`/`Right`
-   correctly reading near `0` (open) on the OSC side. Re-enable it yourself
+   `v2/EyeLidLeft`/`v2/EyeLidRight`, a checkbox appears to disable it — leave
+   it checked. Otherwise VRChat's own automatic blink independently
+   opens/closes its own eyelid shape (often a *different* shape than the one
+   driven by OSC, e.g. a shared `vrc.blink`) on its own timer, fighting with —
+   and sometimes fully masking — the OSC-driven blink. Re-enable it yourself
    in Eye Look settings if you ever remove the OSC blink wiring.
 6. The button at the bottom is a single **ON/OFF toggle** reflecting whether
-   this avatar currently has all 10 parameters wired:
-   - **OFF → click → Apply**: creates (or reuses) the avatar's FX Animator
-     Controller, Gesture Animator Controller (only if head pose is wired —
-     see above), and Expression Parameters asset; adds the missing
-     parameters; and adds one `OSC_<ParamName>` layer per wired parameter
-     (blend shapes → FX, head pose → Gesture). Re-running replaces its own
+   this avatar currently has all parameters wired:
+   - **OFF → click → Apply**: removes any retired custom10 leftovers
+     ([migration](#migrating-from-the-retired-custom10-setup)); creates (or
+     reuses) the avatar's FX Animator Controller, Gesture Animator Controller
+     (only if head pose is wired — see above), and Expression Parameters
+     asset; adds the missing parameters (with the `v2/EyeLid*` 0.75
+     defaults); and adds one `OSC_*` layer per wired parameter (blend shapes
+     → FX, head pose → Gesture). Re-running replaces its own
      layers/parameters rather than duplicating them, so it's safe to click
      again after changing your picks.
    - **ON → click → Remove**: strips every parameter and `OSC_*` layer this
-     wizard added from both the FX and Gesture controllers, cleanly
-     (including their generated BlendTree/AnimationClip/StateMachineBehaviour
-     sub-assets) — a full undo, restoring VRChat's native head control,
-     without touching anything else on the avatar's controllers or
-     Expression Parameters.
+     wizard (any version) added from both the FX and Gesture controllers,
+     cleanly (including their generated
+     BlendTree/AnimationClip/StateMachineBehaviour sub-assets) — a full
+     undo, restoring VRChat's native head control, without touching anything
+     else on the avatar's controllers or Expression Parameters.
 7. Verify **in VRChat** (upload or local test), not just in the editor —
    Humanoid muscle-driven additive layers and Animator direct-blend setups
    behave the same in-editor and in-client, but VRChat's own avatar
@@ -156,8 +180,11 @@ folder in first.)
   can touch, even restricted to the Head via the shared head-only
   `AvatarMask`) must have "Is Animated" on to respect that animation instead
   of fighting it.
-- **Eyes stuck closed / auto-blink fighting OSC blink**: see the Eyelids
-  checkbox note in step 5 above.
+- **Eyes stuck closed with the tracker off**: the avatar was probably built
+  by a pre-#21 wizard (0-default eyelid params) or the `v2/EyeLid*`
+  parameters lost their 0.75 default — re-run Apply and re-upload.
+- **Eyes stuck closed / auto-blink fighting OSC blink while tracking**: see
+  the Eyelids checkbox note in step 5 above.
 - **Hand gestures stopped working after applying head pose**: the wizard
   only creates a new Gesture controller (copying the VRC SDK's stock hands
   layer) if the avatar still had VRChat's *default* Gesture layer. If Apply
@@ -168,22 +195,28 @@ folder in first.)
 
 ## Design notes
 
-- **Single source of truth for the 10 parameters**:
-  `VRChatCameraOSC/Editor/OscParameterSpec.cs` mirrors `PARAM_NAMES`/`PARAM_RANGES`
-  in the Rust app's `src/mapping/mod.rs` (issue #14). Keep the two in sync by
-  hand — there's no automated check across the Rust/C# boundary.
+- **Single source of truth for the parameters**:
+  `VRChatCameraOSC/Editor/OscParameterSpec.cs` mirrors the Unified
+  Expressions emission table in the Rust app's `src/mapping/unified.rs`
+  (issues #14/#21). Keep the two in sync by hand — there's no automated
+  check across the Rust/C# boundary.
 - **Idempotent by construction**: every generated Animator layer is named
-  `OSC_<ParamName>`; re-running the wizard removes and replaces its own
-  layers instead of appending duplicates. Same for Expression Parameters —
-  merge only adds parameters that aren't already present by name.
-- **`MouthSmile` vs `MouthWide`**: deliberately separate signals in the Rust
-  mapping (vertical corner lift vs. horizontal stretch/pucker) — wire them to
-  different blend shapes if your avatar has both; it's fine to wire only one.
+  `OSC_<ParamName>` (with `/` → `_` — Animator *parameters* keep the
+  `v2/...` slash, but asset names must not contain path separators);
+  re-running the wizard removes and replaces its own layers instead of
+  appending duplicates. Same for Expression Parameters — merge only adds
+  parameters that aren't already present by name.
+- **`v2/MouthSmile*` vs `v2/MouthStretch*`**: deliberately separate signals
+  in the Rust mapping (vertical corner lift vs. horizontal stretch) — wire
+  them to different blend shapes if your avatar has both; it's fine to wire
+  only one.
 
 ## Tests
 
 `VRChatCameraOSC/Tests/Editor/` (Unity Test Framework, EditMode) covers the
-Expression Parameters merge logic and the Animator layer builder against
-synthetic Humanoid/blend-shape data — no real avatar asset required to run
-them. Not included in the exported `.unitypackage` (end users don't need
-them); only export `Assets/VRChatCameraOSC/Editor`.
+Expression Parameters merge logic (including the `v2/EyeLid*` defaults and
+custom10 migration) and the Animator layer builder (including the inverted
+eyelid blend tree) against synthetic Humanoid/blend-shape data — no real
+avatar asset required to run them. Not included in the exported
+`.unitypackage` (end users don't need them); only export
+`Assets/VRChatCameraOSC/Editor`.

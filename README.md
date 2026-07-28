@@ -23,15 +23,17 @@ Realtime face tracking for VRChat, driven from your webcam and delivered over OS
 - **Face mesh** — extract facial landmarks (face mesh) to derive expression and pose.
 - **Hand tracking** — track hand/finger landmarks and drive avatar gestures. *(planned)*
 - **OSC output** — connect to VRChat over OSC and move your own avatar.
-- **Realtime face tracking → avatar** — map tracked landmarks to avatar parameters live.
-- **VRCFaceTracking-compatible output** (`--mapping vrcft`) — emit the Unified
-  Expressions `v2/` parameters that VRCFT sends, so VRCFT-ready avatars work
-  with **zero avatar-side setup** (issue #18). **Avatar-aware**: reads the
-  worn avatar's OSC config (and follows `/avatar/change`) to send exactly the
-  parameters it declares — float, bool, and **binary** (`<Name>1/2/4/8` +
-  `Negative`) forms — at their exact addresses. **OSCQuery** (mDNS) makes
-  both directions work with a VRChat on another machine, and lets VRChat
-  auto-discover the tracker with no port setup.
+- **VRCFaceTracking-compatible output** — the tracker speaks the standard
+  Unified Expressions `v2/` parameter set that VRCFT sends (issues #18/#21;
+  this is the **only** output format — the former app-specific `custom10`
+  set is retired). VRCFT-ready avatars work with **zero avatar-side setup**;
+  plain avatars get a [setup wizard](#avatar-setup-required-for-the-avatar-to-actually-move).
+  **Avatar-aware**: reads the worn avatar's OSC config (and follows
+  `/avatar/change`) to send exactly the parameters it declares — float,
+  bool, and **binary** (`<Name>1/2/4/8` + `Negative`) forms — at their
+  exact addresses. **OSCQuery** (mDNS) makes both directions work with a
+  VRChat on another machine, and lets VRChat auto-discover the tracker with
+  no port setup.
 - **Native eye tracking** (default ON) — gaze + blink over VRChat's own
   `/tracking/eye/*` OSC endpoints, which drive the avatar's **existing eye
   bones directly** — works on any avatar, no parameters, no wizard (issue #19).
@@ -46,12 +48,15 @@ Realtime face tracking for VRChat, driven from your webcam and delivered over OS
 ## Status
 
 🚧 Early development. Interfaces and parameters are subject to change. The full
-pipeline (capture → detect → face mesh → mapping → OSC) is wired end-to-end,
-with **two selectable tracking backends** (issue #17): the default
-**MediaPipe** stack (YuNet → FaceMesh V2 → Blendshape V2, ported from
-[AvataCam](https://github.com/m96-chan/AvataCam)) and the original **FAN**
-stack (S3FD → 2DFAN4). Model weights auto-download on first run. Hand/finger
-tracking is the main remaining gap (see Roadmap).
+pipeline (capture → detect → face mesh → mapping → OSC) is wired end-to-end
+on the **MediaPipe** stack (YuNet → FaceMesh V2 → Blendshape V2, ported from
+[AvataCam](https://github.com/m96-chan/AvataCam)). Model weights
+auto-download on first run. Hand/finger tracking is the main remaining gap
+(see Roadmap).
+
+> The original FAN (S3FD → 2DFAN4) 68-landmark backend and the app-specific
+> `custom10` parameter set were **retired in issue #21** — everything now
+> rides the standard VRCFT Unified Expressions `v2/*` format.
 
 ## Architecture
 
@@ -61,39 +66,14 @@ swappable:
 | Stage | Module | Notes |
 |-------|--------|-------|
 | Capture | `capture::CameraSource` | `capture::native::NativeCamera` — AVFoundation on macOS, V4L2 on Linux, MediaFoundation on Windows (build-verified in CI; runtime verification on real Windows hardware pending), via `nokhwa`; synthetic `FakeCamera` for tests/headless |
-| Tracking (default) | `tracking::arkit::ArkitFaceTracker` | `mediapipe::MediapipeTracker` — **YuNet** detector → rotated eyes-aligned ROI → **FaceMesh V2** (478 3-D landmarks, on **burn-wgpu** GPU with candle-onnx CPU fallback) → **Blendshape V2** (52 ARKit coefficients) + per-axis head rotation |
-| Tracking (`fan`) | `tracking::FaceTracker` | `fan::FanTracker` — the face-alignment **2DFAN4** net ported to pure-Rust **candle**, with `sfd::SfdDetector` (**S3FD**) auto-cropping first |
-| Mapping (default) | `mapping::arkit::ArkitMapper` | 52 ARKit coefficients + head pose → 10 avatar params, with per-channel neutral-baseline calibration (per-eye blink self-calibration so open→0, blink→1) and One-Euro smoothing |
-| Mapping (`vrcft`) | `mapping::unified::UnifiedMapper` | 52 ARKit coefficients → Unified Expressions shapes (VRCFT LiveLink correlation) → the VRCFT `v2/` parameter set + `*TrackingActive` bools, same calibration/smoothing design; profile selected via `[mapping]` / `--mapping` (issue #18) |
-| Avatar gating (`vrcft`) | `mapping::avatar` + `osc::AvatarChangeListener` | reads VRChat's per-avatar OSC config JSON and follows `/avatar/change` (nonblocking listen on `[osc] listen_port`, default 9001) → send only declared params at exact addresses, in declared float/bool/binary forms (issue #18 phases 2–3) |
-| OSCQuery (`vrcft`) | `osc::oscquery` | mDNS (`mdns-sd`) advertisement of our OSC input (`_osc._udp` + `_oscjson._tcp` with a minimal HTTP `?HOST_INFO`/root-node responder) so VRChat auto-discovers us, plus discovery of `VRChat-Client-*` and HTTP fetch of the avatar's declared parameters — local-file → OSCQuery → blind-prefix priority (issue #18 phase 3b) |
-| Eye (native) | `mapping::eye::NativeEyeMapper` | 12 eye channels → `/tracking/eye/LeftRightPitchYaw` (degrees) + `EyesClosedAmount`, appended to either profile's output; `[eye]` / `--native-eye` (issue #19) |
-| Mapping (`fan`) | `mapping::Mapper` | iBUG-68 landmarks → the same 10 params via geometric ratios, clamped + smoothed |
+| Tracking | `tracking::arkit::ArkitFaceTracker` | `mediapipe::MediapipeTracker` — **YuNet** detector → rotated eyes-aligned ROI → **FaceMesh V2** (478 3-D landmarks, on **burn-wgpu** GPU with candle-onnx CPU fallback) → **Blendshape V2** (52 ARKit coefficients) + per-axis head rotation. Behind a trait so a different expression model can slot in ("models are pluggable") |
+| Mapping | `mapping::unified::UnifiedMapper` | 52 ARKit coefficients → Unified Expressions shapes (VRCFT LiveLink correlation) → the VRCFT `v2/` parameter set + `*TrackingActive` bools, with per-channel neutral-baseline calibration (per-eye blink self-calibration) and One-Euro smoothing (`mapping::arkit` shared machinery) |
+| Avatar gating | `mapping::avatar` + `osc::AvatarChangeListener` | reads VRChat's per-avatar OSC config JSON and follows `/avatar/change` (nonblocking listen on `[osc] listen_port`, default 9001) → send only declared params at exact addresses, in declared float/bool/binary forms (issue #18 phases 2–3) |
+| OSCQuery | `osc::oscquery` | mDNS (`mdns-sd`) advertisement of our OSC input (`_osc._udp` + `_oscjson._tcp` with a minimal HTTP `?HOST_INFO`/root-node responder) so VRChat auto-discovers us, plus discovery of `VRChat-Client-*` and HTTP fetch of the avatar's declared parameters — local-file → OSCQuery → blind-prefix priority (issue #18 phase 3b) |
+| Eye (native) | `mapping::eye::NativeEyeMapper` | 12 eye channels → `/tracking/eye/LeftRightPitchYaw` (degrees) + `EyesClosedAmount`, appended to the parameter output; `[eye]` / `--native-eye` (issue #19) |
 | OSC | `osc::OscSink` | `UdpOscSender` to VRChat, or `MonitorSink` dry-run |
 | Loop | `pipeline::Pipeline` | `capture → track → map → OSC`, driven by the TUI or headless monitor |
-| Models | `models::ensure_present` | auto-downloads `models/*.safetensors` / `models/*.onnx` from a GitHub Release on first run |
-
-### Why two backends?
-
-The FAN pipeline derives expressions from 68 2-D landmark *geometry* (eye
-aspect ratio etc.), which fundamentally can't do some things a dedicated
-expression network can: FAN's landmarks never fully collapse on closed eyes
-(so blink can't saturate to 1.0), and the eye aspect ratio shrinks when you
-pitch your head down (so looking down falsely reads as a blink). The
-MediaPipe Blendshape V2 model predicts `eyeBlinkLeft/Right`, `jawOpen`, etc.
-directly from a rotation-normalized face crop, which is robust to head pose —
-this is the same stack AvataCam uses, and it is the default here. FAN stays
-selectable (`--backend fan` or `backend = "fan"` under `[tracking]` in the
-config) per the "models are pluggable" principle.
-
-### Model & PyTorch parity
-
-Face landmarks come from a candle port of [`1adrianb/face-alignment`](https://github.com/1adrianb/face-alignment)
-(2DFAN4). The port is validated for **numeric parity** against the PyTorch
-reference: pretrained weights are exported to safetensors and the Rust output is
-compared to PyTorch on identical input. Observed agreement is to f32 precision
-(full-network max abs diff ≈ 4e-7). See [`reference/`](reference/) and the
-`fan_parity` / `fan_convblock_parity` / `fan_units` tests.
+| Models | `models::ensure_present` | auto-downloads `models/*.onnx` from a GitHub Release on first run |
 
 ## Getting Started
 
@@ -111,31 +91,17 @@ cargo run --release
 cargo run --release -- --monitor --fake --frames 20
 ```
 
-The default MediaPipe backend loads `models/face_detection.onnx` (YuNet),
+The tracker loads `models/face_detection.onnx` (YuNet),
 `models/face_landmarks.onnx` (FaceMesh V2), and `models/face_blendshapes.onnx`
-(Blendshape V2); the `fan` backend loads `models/2dfan4.safetensors` and
-`models/s3fd.safetensors`. **All auto-download on first run** (from this
+(Blendshape V2). **All auto-download on first run** (from this
 repo's [`models-v1` release](https://github.com/m96-chan/VRChatCameraOSC/releases/tag/models-v1))
 if missing — no Python/PyTorch needed. Offline, or if the download fails, the
 loop still runs with tracking disabled and prints a clear message.
 
-Contributors validating the candle port against PyTorch (numeric-parity
-tests) still use the reference harness to regenerate these from the original
-pretrained weights — see [`reference/README.md`](reference/README.md):
-
-```bash
-cd reference && uv venv --python 3.11
-uv pip install --python .venv "torch>=2.2" "numpy<2" safetensors face-alignment scikit-image
-.venv/bin/python gen_fixtures.py   # downloads + converts the pretrained weights
-```
-
 CLI flags: `--monitor` (headless), `--fake` (synthetic camera), `--frames N`
-(stop after N frames), `--backend mediapipe|fan` (overrides the config's
-`[tracking] backend`), `--mapping custom10|vrcft` (overrides `[mapping]
-profile`; see Avatar setup below), `--native-eye on|off` (overrides `[eye]
+(stop after N frames), `--native-eye on|off` (overrides `[eye]
 native`; see Avatar setup below), `--oscquery on|off` (overrides `[osc]
-oscquery`; see Avatar setup below), `--weights PATH`, `--detector PATH` (FAN
-backend only; a custom path is never auto-downloaded), `--detect-interval N`
+oscquery`; see Avatar setup below), `--detect-interval N`
 (see Performance below), `--calibrate-frames N` (see Calibration below; `0`
 skips calibration).
 
@@ -144,26 +110,24 @@ end-to-end avatar path.
 
 ### Neutral-pose calibration
 
-Both backends capture a short window at startup (`--calibrate-frames N`,
+The tracker captures a short window at startup (`--calibrate-frames N`,
 default 10 frames) — **hold a relaxed, forward-facing expression** while it
 says `calibrating neutral pose ...`. In the TUI, press **`c`** at any time to
 redo it (camera angle or lighting changed, or you weren't ready the first
 time).
 
-- **MediaPipe backend:** the raw Blendshape V2 coefficients have a small
-  non-zero resting baseline per channel (e.g. `jawOpen` ≈ 0.2 with the mouth
-  closed, and each eye's `eyeBlink` baseline differs). Calibration subtracts
-  the per-channel resting baseline so a resting face reads `0` everywhere, and
-  blink is self-calibrated **per eye** — open reads `0`, a blink a fixed gain
-  above your own baseline saturates to `1`. The head's "facing front" pose is
-  baselined the same way. If startup calibration is skipped, the same
-  baselines are accumulated automatically over the first frames of tracking.
-- **FAN backend:** re-derives the geometric neutral ratios (issue #15) —
-  without this some parameters stay permanently clamped at one end.
+The raw Blendshape V2 coefficients have a small
+non-zero resting baseline per channel (e.g. `jawOpen` ≈ 0.2 with the mouth
+closed, and each eye's `eyeBlink` baseline differs). Calibration subtracts
+the per-channel resting baseline so a resting face reads `0` everywhere, and
+blink is self-calibrated **per eye** — open reads `0`, a blink a fixed gain
+above your own baseline saturates to `1`. The head's "facing front" pose is
+baselined the same way. If startup calibration is skipped, the same
+baselines are accumulated automatically over the first frames of tracking.
 
 ### Performance
 
-The default MediaPipe backend runs at **camera rate — measured 30 FPS**
+The tracker runs at **camera rate — measured 30 FPS**
 (640×480@30 webcam, `--release`, default features). Three things make that
 possible (issue #17):
 
@@ -181,30 +145,7 @@ possible (issue #17):
 - **Cached ONNX initializers** (fork addition): graph weights are extracted
   once at load instead of being re-parsed from the proto every evaluation.
 
-The blendshape stage (~2 ms) stays on CPU. The `cuda` feature does **not**
-apply to this backend (see above — burn-wgpu is the GPU path here); `cuda`
-still accelerates the FAN backend below.
-
-The FAN backend: `candle` builds with no acceleration backend by default
-(CPU fallback only), which — combined with running the S3FD detector on every
-frame — measured **~0.5 FPS** on a 16-core desktop CPU (issue #13). Two
-independent optimizations address this:
-
-- **Detect-then-track (always on, default `--detect-interval 8`):** the S3FD
-  detector is by far the most expensive stage, and a face doesn't move far
-  frame-to-frame, so it only re-runs every `detect_interval` frames; the
-  frames in between derive their crop box from the previous frame's FAN
-  landmarks instead. It always re-detects immediately after losing the face,
-  regardless of interval. This alone roughly **doubles** throughput on CPU
-  (S3FD's ~1.3s/frame vs. FAN's ~0.6s/frame, measured on the reference
-  hardware above).
-- **Opt-in `cuda` feature:** `cargo build --release --features cuda` runs
-  inference on an NVIDIA GPU (`Device::cuda_if_available` — falls back to CPU
-  automatically when the feature is off or no GPU is found). Requires the
-  CUDA toolkit to *build*, not to run a non-cuda build. Measured **~29.5 FPS**
-  (capture-rate-limited) on an RTX 5090, vs. ~0.5 FPS CPU-only — **not**
-  part of `default`, since macOS has no CUDA and most end users won't have an
-  NVIDIA GPU + toolkit to build against.
+The blendshape stage (~2 ms) stays on CPU.
 
 ## Avatar setup (required for the avatar to actually move)
 
@@ -224,20 +165,22 @@ range gains are `[eye] yaw_range_deg` / `pitch_range_deg` (defaults 30°/25°).
 If the face is lost, the data times out after 10 s and VRChat's own eye
 behaviour resumes automatically.
 
-Expressiveness tiers at a glance (松竹梅 — issue #19):
+Since issue #21 there is a **single output format**: the standard VRCFT
+(Unified Expressions) `v2/*` parameter set. Expressiveness tiers at a glance
+(松竹梅 — issue #19):
 
-| Tier | What you run | Avatar-side work | What moves |
-|---|---|---|---|
-| 梅 | `custom10` profile + `unity/` wizard | run the wizard | 10 params: mouth, blink, brows, head |
-| 竹 | either profile + native eye (default ON) | none for the eyes | + gaze & blink on any avatar with eye bones |
-| 松 | `--mapping vrcft` on an FT-ready avatar | none | full Unified Expressions float set (~145 params) |
+| Tier | Avatar-side work | What moves |
+|---|---|---|
+| 梅 | run the `unity/` wizard (plain avatars) | the wizard's v2/* subset: blink, brows, jaw, smile, stretch, head |
+| 竹 | none for the eyes (native eye, default ON) | + gaze & blink on any avatar with eye bones |
+| 松 | none (FT-ready avatar) | full Unified Expressions float set (~145 params) |
 
-### Option 1 — VRCFT-ready avatars: `--mapping vrcft`, no setup (issue #18)
+### Option 1 — VRCFT-ready avatars: no setup (issue #18)
 
 If your avatar already supports **VRCFaceTracking / Unified Expressions**
-(most commercial face-tracking-ready avatars do), run with `--mapping vrcft`
-(or set `[mapping] profile = "vrcft"` in the config): the tracker emits the
-same `/avatar/parameters/<prefix>v2/<Name>` parameters VRCFT sends, plus the
+(most commercial face-tracking-ready avatars do), just run the tracker: it
+emits the same `/avatar/parameters/<prefix>v2/<Name>` parameters VRCFT
+sends, plus the
 `EyeTrackingActive` / `ExpressionTrackingActive` / `LipTrackingActive` bools
 that FT avatars gate their animator layers on. The avatar needs **no wizard
 and no Unity work**. Formulas are ported from VRCFT's own parameter
@@ -293,38 +236,36 @@ Related config keys (`config.toml`):
   full float set is sent blind under each prefix (default `""` and `"FT/"`),
   exactly the phase-1 behavior. VRChat ignores undeclared addresses.
 
-Current limits: requires the `mediapipe` backend (default). If a *remote*
+Current limits: if a *remote*
 VRChat's mDNS advertisement only carries a loopback address (older VRChat
 builds always advertise `127.0.0.1`), it cannot be resolved from another
 machine — copy/mount its `OSC` folder and use `avatar_config_dir` instead.
 
-### Option 2 — custom 10-parameter setup (the `unity/` wizard) Otherwise (default `custom10` profile), add these as **Float** VRC
-Expression Parameters (Unity + VRChat SDK3) and drive blend shapes / bones
-from them in the FX Animator Controller:
+### Option 2 — plain avatars: the `unity/` wizard builds a "lite" FT avatar
 
-| OSC address | Range | Meaning |
+For an avatar with ordinary blend shapes and no face-tracking setup,
+[`unity/`](unity/) is an editor wizard (VRChat SDK3, Humanoid avatars) that
+wires the webcam-trackable subset of the same standard `v2/*` parameters to
+the blend shapes / head bone your avatar already has — generating the VRC
+Expression Parameters and the FX/Gesture Animator Controller layers for you:
+
+| OSC address (`/avatar/parameters/…`) | Range | Meaning |
 |---|---|---|
-| `/avatar/parameters/MouthOpen` | `0..1` | mouth opening amount |
-| `/avatar/parameters/EyeBlinkLeft` | `0..1` | left eye closed amount (`1` = closed) |
-| `/avatar/parameters/EyeBlinkRight` | `0..1` | right eye closed amount |
-| `/avatar/parameters/BrowUpLeft` | `0..1` | left eyebrow raise |
-| `/avatar/parameters/BrowUpRight` | `0..1` | right eyebrow raise |
-| `/avatar/parameters/MouthSmile` | `0..1` | mouth-corner vertical lift (smile) |
-| `/avatar/parameters/MouthWide` | `-1..1` | mouth-corner horizontal stretch (`+` wide/grin, `−` pucker) |
-| `/avatar/parameters/HeadRoll` | `-1..1` | head tilt |
-| `/avatar/parameters/HeadYaw` | `-1..1` | head turn left/right |
-| `/avatar/parameters/HeadPitch` | `-1..1` | head tilt up/down |
+| `v2/EyeLidLeft`, `v2/EyeLidRight` | `0..1` | eyelid, VRCFT semantics: `0` = closed, `0.75` = relaxed open (declared default), `1` = wide |
+| `v2/BrowUpLeft`, `v2/BrowUpRight` | `0..1` | eyebrow raise |
+| `v2/JawOpen` | `0..1` | mouth opening amount |
+| `v2/MouthSmileLeft`, `v2/MouthSmileRight` | `0..1` | mouth-corner lift (smile) |
+| `v2/MouthStretchLeft`, `v2/MouthStretchRight` | `0..1` | mouth-corner horizontal stretch (wide/grin) |
+| `v2/Head/Yaw`, `v2/Head/Pitch`, `v2/Head/Roll` | `-1..1` | head turn / nod / tilt (Humanoid head bone, additive layer) |
 
-Full derivation (which landmarks, which formula) is documented in
-[`src/mapping/mod.rs`](src/mapping/mod.rs). See VRChat's own docs for the
-mechanics: [OSC Avatar Parameters](https://docs.vrchat.com/docs/osc-avatar-parameters),
+Because these are the standard VRCFT names, a wizard-made avatar also works
+with VRCFaceTracking itself, and the tracker's avatar-aware gating sends
+exactly this declared subset. Avatars set up with the retired pre-#21
+custom10 wizard are migrated in place by re-running Apply (then re-upload).
+See [`unity/README.md`](unity/README.md) for the full walkthrough, and
+VRChat's own docs for the mechanics:
+[OSC Avatar Parameters](https://docs.vrchat.com/docs/osc-avatar-parameters),
 [Avatar Animator Parameters](https://creators.vrchat.com/avatars/animator-parameters/).
-
-**Doing this by hand is tedious and error-prone — [`unity/`](unity/) is an
-editor wizard (VRChat SDK3, Humanoid avatars) that automates it**: point it at
-your avatar and the blend shapes it already has, and it generates the
-Expression Parameters and FX Animator Controller layers above for you. See
-[`unity/README.md`](unity/README.md).
 
 ## Configuration
 
@@ -333,16 +274,14 @@ OSC host/port, camera device, and tracking settings will be configurable from th
 ## Roadmap
 
 - [x] Camera capture pipeline
-- [x] Face mesh landmark extraction (FAN / candle, PyTorch-parity verified)
-- [x] Face detector (S3FD / candle) — auto-crop the face before FAN
-- [x] MediaPipe backend (YuNet → FaceMesh V2 → Blendshape V2, ARKit-52) — new default, AvataCam-parity expression quality
+- [x] MediaPipe tracking stack (YuNet → FaceMesh V2 → Blendshape V2, ARKit-52) — AvataCam-parity expression quality
 - [ ] Hand / finger landmark extraction
-- [x] Landmark → VRChat OSC parameter mapping
 - [x] ARKit blendshapes → OSC mapping (per-eye blink self-calibration, One-Euro smoothing)
 - [x] VRCFaceTracking-compatible output — Unified Expressions `v2/` float params (issue #18 phase 1)
 - [x] VRCFT binary parameter encoding + avatar-config param gating with `/avatar/change` tracking (issue #18 phases 2–3)
 - [x] OSCQuery: mDNS advertisement + remote avatar-parameter discovery (issue #18 phase 3b)
 - [x] Native eye tracking — `/tracking/eye/*` gaze + blink, any avatar, zero setup (issue #19)
+- [x] Standardize on VRCFT `v2/*` everywhere — custom10 + FAN backend retired; wizard builds lite FT avatars (issue #21)
 - [ ] Tongue tracking — needs a model with a tongue signal; R&D (issue #20)
 - [x] OSC sender (UDP) + dry-run monitor
 - [x] TUI: live values, status, and configuration

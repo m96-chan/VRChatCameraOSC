@@ -96,6 +96,8 @@ fn backtab_and_arrows_switch_tabs() {
     assert_eq!(s.tab, Tab::Config);
 }
 
+// The Smoothing config field was retired with the FAN backend (issue #21):
+// the cursor wraps across exactly Host and Port now.
 #[test]
 fn up_down_move_config_cursor() {
     let mut s = UiState::new();
@@ -103,11 +105,9 @@ fn up_down_move_config_cursor() {
     s.on_key(KeyCode::Down);
     assert_eq!(s.selected_field, ConfigField::Port);
     s.on_key(KeyCode::Down);
-    assert_eq!(s.selected_field, ConfigField::Smoothing);
-    s.on_key(KeyCode::Down);
     assert_eq!(s.selected_field, ConfigField::Host, "wraps");
     s.on_key(KeyCode::Up);
-    assert_eq!(s.selected_field, ConfigField::Smoothing, "wraps back");
+    assert_eq!(s.selected_field, ConfigField::Port, "wraps back");
 }
 
 #[test]
@@ -165,52 +165,11 @@ fn port_saturates_at_u16_max() {
 }
 
 #[test]
-fn smoothing_edited_with_plus_minus_and_clamped() {
-    let mut s = UiState::new();
-    s.on_key(KeyCode::Right);
-    s.on_key(KeyCode::Right); // Config
-    s.on_key(KeyCode::Down);
-    s.on_key(KeyCode::Down); // Smoothing
-    assert_eq!(s.selected_field, ConfigField::Smoothing);
-    s.set_smoothing(0.5);
-    // a non +/- char while Smoothing is selected is ignored
-    s.on_key(KeyCode::Char('a'));
-    assert!((s.smoothing - 0.5).abs() < 1e-6);
-    s.on_key(KeyCode::Char('+'));
-    assert!((s.smoothing - 0.55).abs() < 1e-6);
-    s.on_key(KeyCode::Char('-'));
-    s.on_key(KeyCode::Char('-'));
-    assert!((s.smoothing - 0.45).abs() < 1e-6);
-    // clamp high
-    for _ in 0..50 {
-        s.on_key(KeyCode::Char('+'));
-    }
-    assert!((s.smoothing - 1.0).abs() < 1e-6);
-    // clamp low
-    for _ in 0..50 {
-        s.on_key(KeyCode::Char('-'));
-    }
-    assert!((s.smoothing - 0.0).abs() < 1e-6);
-}
-
-#[test]
 fn typing_ignored_off_config_tab() {
     let mut s = UiState::new();
     assert_eq!(s.tab, Tab::Status);
     s.on_key(KeyCode::Char('z'));
     assert_eq!(s.host, "127.0.0.1", "host unchanged when not on Config tab");
-}
-
-#[test]
-fn backspace_on_smoothing_is_noop() {
-    let mut s = UiState::new();
-    s.on_key(KeyCode::Right);
-    s.on_key(KeyCode::Right);
-    s.on_key(KeyCode::Down);
-    s.on_key(KeyCode::Down); // Smoothing
-    let before = s.smoothing;
-    s.on_key(KeyCode::Backspace);
-    assert_eq!(s.smoothing, before);
 }
 
 #[test]
@@ -220,15 +179,13 @@ fn setters_update_state() {
     s.set_tracker_fps(28.5);
     s.set_osc_send_rate(60.0);
     s.set_osc_target("192.168.1.10", 9001);
-    s.set_live_values(vec![("JawOpen".to_string(), 0.42)]);
-    s.set_smoothing(2.0); // clamps
+    s.set_live_values(vec![("v2/JawOpen".to_string(), 0.42)]);
 
     assert_eq!(s.capture_fps, 30.0);
     assert_eq!(s.tracker_fps, 28.5);
     assert_eq!(s.osc_send_rate, 60.0);
     assert_eq!(s.osc_target(), "192.168.1.10:9001");
-    assert_eq!(s.live_values, vec![("JawOpen".to_string(), 0.42)]);
-    assert_eq!(s.smoothing, 1.0);
+    assert_eq!(s.live_values, vec![("v2/JawOpen".to_string(), 0.42)]);
 }
 
 #[test]

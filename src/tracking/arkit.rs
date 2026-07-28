@@ -1,15 +1,10 @@
 //! Shared types for ARKit-style expression tracking backends (issue #17).
 //!
-//! The MediaPipe backend (`tracking::mediapipe`, ported from AvataCam) emits a
-//! fundamentally richer signal than the FAN 68-landmark backend: 52
-//! ARKit-aligned blendshape coefficients predicted by a dedicated network,
-//! plus a head rotation derived from 478 3-D landmarks. These types are that
-//! backend-independent signal; `mapping::arkit` consumes them to produce the
-//! 10 OSC parameters.
-//!
-//! Kept separate from [`super::FaceLandmarks`] on purpose: geometric 68-point
-//! landmarks and NN-predicted expression coefficients are different signals,
-//! and squeezing both through one trait would force lossy conversions.
+//! The MediaPipe backend (`tracking::mediapipe`, ported from AvataCam) emits
+//! 52 ARKit-aligned blendshape coefficients predicted by a dedicated
+//! network, plus a head rotation derived from 478 3-D landmarks. These types
+//! are that backend-independent signal; `mapping::unified` consumes them to
+//! produce the OSC parameters.
 
 use crate::capture::Frame;
 use anyhow::Result;

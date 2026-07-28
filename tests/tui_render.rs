@@ -82,9 +82,11 @@ fn config_tab_shows_fields() {
     let out = draw(&s, 80, 24);
     assert!(out.contains("Host"));
     assert!(out.contains("Port"));
-    assert!(out.contains("Smoothing"));
-    // the smoothing gauge renders a percentage
-    assert!(out.contains("50%"), "gauge percent missing: {out}");
+    // Retired with the FAN backend (issue #21): no smoothing field/gauge.
+    assert!(
+        !out.contains("Smoothing"),
+        "smoothing UI should be gone: {out}"
+    );
 }
 
 #[test]
@@ -104,10 +106,9 @@ fn help_overlay_visible_only_when_enabled() {
 fn status_tab_body_renders() {
     let mut s = UiState::new();
     s.tab = Tab::Status;
-    s.set_smoothing(0.5);
     let out = draw(&s, 80, 24);
     assert!(out.contains("OSC target"));
-    assert!(out.contains("Smoothing"));
+    assert!(out.contains("OSC rate"));
 }
 
 #[test]

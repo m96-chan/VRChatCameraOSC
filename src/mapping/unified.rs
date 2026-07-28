@@ -35,10 +35,9 @@
 //!   → OscParam floats under each configured prefix + 3 status bools
 //! ```
 //!
-//! Calibration, smoothing, and deadzone reuse the [`super::arkit`] design
-//! (AvataCam-ported `BsCalib`/`OneEuro`) — the difference is scope: this
-//! mapper calibrates **every** real channel because nearly all 52 reach an
-//! output here, where [`super::arkit::ArkitMapper`] only needs 11.
+//! Calibration, smoothing, and deadzone reuse the [`super::arkit`] machinery
+//! (AvataCam-ported `OneEuro`/`HeadCalib`/`deadzone`); this mapper calibrates
+//! **every** real channel because nearly all 52 reach an output here.
 //!
 //! # Avatar-aware gating (issue #18 phases 2+3) vs. blind prefixes
 //!
@@ -73,9 +72,11 @@
 //! - **Gaze:** `v2/Eye*X` positive = looking toward the **subject's right**
 //!   (left eye `lookIn − lookOut`, right eye `lookOut − lookIn`), `v2/Eye*Y`
 //!   positive = up.
-//! - **Head:** `v2/Head/{Yaw,Pitch,Roll}` reuse the exact normalization and
-//!   sign conventions of [`super::arkit::ArkitMapper`]'s
-//!   `HeadYaw`/`HeadPitch`/`HeadRoll` (roll negated, yaw/pitch as-is).
+//! - **Head:** `v2/Head/{Yaw,Pitch,Roll}` keep the normalization and sign
+//!   conventions the retired `custom10` head params used (roll negated,
+//!   yaw/pitch as-is; ranges from [`ArkitMappingConfig`]) — chosen to match
+//!   [`crate::tracking::arkit::HeadPose`]'s documented signs, to be verified
+//!   against a real FT avatar in the live VRChat demo.
 
 use super::arkit::{deadzone, ArkitMappingConfig, HeadCalib, OneEuro};
 use super::avatar::{AvatarOscConfig, AvatarParamSet};
@@ -350,8 +351,8 @@ impl UnifiedMapper {
     }
 
     /// Re-derive the neutral baselines (52 channels + 3 head axes) from a
-    /// batch of relaxed forward-facing frames — same contract as
-    /// [`super::arkit::ArkitMapper::calibrate`]. Resets smoothing state.
+    /// batch of relaxed forward-facing frames (the pipeline's
+    /// `--calibrate-frames` flow). Resets smoothing state.
     pub fn calibrate(&mut self, frames: &[ArkitFaceFrame]) {
         if frames.is_empty() {
             return;
@@ -376,18 +377,6 @@ impl UnifiedMapper {
             .seed([head_sum[0] / n, head_sum[1] / n, head_sum[2] / n]);
         self.filters = build_channel_filters(&self.config);
         self.head_filters = build_head_filters(&self.config);
-    }
-}
-
-impl super::ArkitOscMapper for UnifiedMapper {
-    fn map(&mut self, frame: &ArkitFaceFrame) -> Vec<OscParam> {
-        UnifiedMapper::map(self, frame)
-    }
-    fn calibrate(&mut self, frames: &[ArkitFaceFrame]) {
-        UnifiedMapper::calibrate(self, frames)
-    }
-    fn set_avatar_config(&mut self, config: Option<&AvatarOscConfig>) {
-        UnifiedMapper::set_avatar_config(self, config)
     }
 }
 

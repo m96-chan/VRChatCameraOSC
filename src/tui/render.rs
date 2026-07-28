@@ -6,7 +6,7 @@
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Tabs};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Tabs};
 use ratatui::Frame;
 
 use super::state::{ConfigField, Tab, UiState};
@@ -83,7 +83,6 @@ fn render_status(frame: &mut Frame, area: Rect, state: &UiState) {
         Line::from(format!("Capture    : {:.1} FPS", state.capture_fps)),
         Line::from(format!("Tracker    : {:.1} FPS", state.tracker_fps)),
         Line::from(format!("OSC rate   : {:.1} msg/s", state.osc_send_rate)),
-        Line::from(format!("Smoothing  : {:.2}", state.smoothing)),
     ];
     let block = Block::default().borders(Borders::ALL).title("Status");
     frame.render_widget(Paragraph::new(lines).block(block), area);
@@ -104,18 +103,12 @@ fn render_values(frame: &mut Frame, area: Rect, state: &UiState) {
 }
 
 fn render_config(frame: &mut Frame, area: Rect, state: &UiState) {
-    let rows = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([Constraint::Min(3), Constraint::Length(3)])
-        .split(area);
-
     let items: Vec<ListItem> = ConfigField::ALL
         .iter()
         .map(|field| {
             let value = match field {
                 ConfigField::Host => state.host.clone(),
                 ConfigField::Port => state.port.to_string(),
-                ConfigField::Smoothing => format!("{:.2}", state.smoothing),
             };
             let marker = if *field == state.selected_field {
                 "> "
@@ -132,12 +125,7 @@ fn render_config(frame: &mut Frame, area: Rect, state: &UiState) {
         })
         .collect();
     let block = Block::default().borders(Borders::ALL).title("Config");
-    frame.render_widget(List::new(items).block(block), rows[0]);
-
-    let gauge = Gauge::default()
-        .block(Block::default().borders(Borders::ALL).title("Smoothing"))
-        .ratio(state.smoothing.clamp(0.0, 1.0) as f64);
-    frame.render_widget(gauge, rows[1]);
+    frame.render_widget(List::new(items).block(block), area);
 }
 
 fn render_footer(frame: &mut Frame, area: Rect) {

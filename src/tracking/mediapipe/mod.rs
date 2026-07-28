@@ -7,11 +7,10 @@
 //! robust per-axis head rotation derived from the 478 landmarks.
 //!
 //! Target quality bar (issue #17): this backend tracks blinks and pitch
-//! robustly where the FAN 68-point + geometric-heuristics backend
-//! ([`super::fan`]) cannot (blink never saturates, pitch is mistaken for
-//! blink). [`MediapipeTracker`] implements [`super::arkit::ArkitFaceTracker`]
-//! — the richer, backend-independent signal `mapping::arkit` consumes,
-//! parallel to how [`super::fan::FanTracker`] implements [`super::FaceTracker`].
+//! robustly where the retired FAN 68-point + geometric-heuristics backend
+//! could not (blink never saturates, pitch is mistaken for blink).
+//! [`MediapipeTracker`] implements [`super::arkit::ArkitFaceTracker`] — the
+//! backend-independent signal the mappers consume.
 //!
 //! The FaceMesh stage runs on **burn-wgpu** (GPU, driver-only; `burn_mesh`,
 //! ported from AvataCam #62) when the default `mesh-gpu` feature is on and a
@@ -177,8 +176,8 @@ pub fn head_pose(points: &[[f32; 3]]) -> HeadPose {
 /// A [`ArkitFaceTracker`] backed by the MediaPipe YuNet + FaceMesh V2 +
 /// Blendshape V2 stack.
 ///
-/// Mirrors [`super::fan::FanTracker`]'s detect-throttling knob
-/// ([`MediapipeTracker::with_detect_interval`]): the (expensive) YuNet
+/// Detect-throttling ([`MediapipeTracker::with_detect_interval`],
+/// issue #13's detect-then-track pattern): the (expensive) YuNet
 /// detector only re-runs every `detect_interval` frames; between detections
 /// the ROI is derived from the *previous frame's* FaceMesh landmarks instead
 /// (mirroring AvataCam's detector-skip tracking, #50/#53). It always
@@ -241,8 +240,7 @@ impl MediapipeTracker {
     ///
     /// FaceMesh runs on burn-wgpu when built with the (default) `mesh-gpu`
     /// feature and a GPU is usable, else on CPU. YuNet and the blendshape
-    /// model stay on CPU (cheap or rarely run); `--features cuda` is
-    /// irrelevant to this backend (it still accelerates the FAN backend).
+    /// model stay on CPU (cheap or rarely run).
     pub fn from_paths(
         detector: impl AsRef<Path>,
         landmark: impl AsRef<Path>,
@@ -314,8 +312,8 @@ impl MediapipeTracker {
 
 /// Check `path` exists, else a clear "missing, will be downloadable" error
 /// naming which model and where it's expected — the model-download wiring
-/// itself lives in `main.rs` (auto-download-on-first-run, mirroring
-/// FAN/S3FD), so this only needs to fail clearly, not fetch anything.
+/// itself lives in `main.rs` (auto-download-on-first-run), so this only
+/// needs to fail clearly, not fetch anything.
 fn require_model(path: &Path, label: &str) -> Result<()> {
     if !path.exists() {
         bail!(
