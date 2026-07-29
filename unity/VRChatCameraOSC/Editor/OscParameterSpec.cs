@@ -228,6 +228,26 @@ namespace VRChatCameraOsc.AvatarSetup
                 || kind == OscParamKind.ArmTracked;
         }
 
+        /// <summary>Synced expression-parameter cost of one declaration in
+        /// VRChat's 256-bit budget: Bool 1 bit, Int/Float 8 bits (the SDK's
+        /// costs; issue #28 rollout hit the cap, so the wizard now surfaces
+        /// this).</summary>
+        public static int BitCost(OscParamSpec spec)
+        {
+            return spec.Kind == OscParamKind.ArmTracked ? 1 : 8;
+        }
+
+        /// <summary>Total synced bits of a declaration set.</summary>
+        public static int BitCost(System.Collections.Generic.IEnumerable<OscParamSpec> specs)
+        {
+            var total = 0;
+            foreach (var s in specs)
+            {
+                total += BitCost(s);
+            }
+            return total;
+        }
+
         /// <summary>The always-declared subset: not Optional (issue #24
         /// wired-only extras) and not mode-gated (hand/arm declarations
         /// follow the wizard's selected mode/toggles).</summary>

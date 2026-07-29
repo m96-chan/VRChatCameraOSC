@@ -32,6 +32,10 @@ namespace VRChatCameraOsc.AvatarSetup
         /// — drives the 0.75..1 segment of the eyelid tree, no extra bits.</summary>
         readonly Dictionary<string, SkinnedMeshRenderer> _wideRenderer = new Dictionary<string, SkinnedMeshRenderer>();
         readonly Dictionary<string, string> _wideBlendShape = new Dictionary<string, string>();
+
+        /// <summary>Wired optional extras the user deselected to stay inside
+        /// VRChat's 256-bit synced parameter budget (issue #28 rollout).</summary>
+        readonly HashSet<string> _excludedOptionals = new HashSet<string>();
         bool _includeHeadPose = true;
         /// <summary>How webcam hand tracking is wired (issue #8): gesture
         /// poses (VCO_Gesture* ints), per-finger curls (VCO_*Curl floats),
@@ -151,6 +155,23 @@ namespace VRChatCameraOsc.AvatarSetup
             }
 
             EditorGUILayout.Space();
+            // Synced-parameter budget (issue #28 rollout: face + hands +
+            // arms no longer fits every avatar under VRChat's 256-bit cap).
+            var projected = SpecsToDeclare(_positiveRenderer.Keys, _handMode, _includeArms, _excludedOptionals);
+            var ownBits = VrcExpressionParametersMerger.ForeignSyncedBits(_avatar.expressionParameters);
+            var totalBits = ownBits + OscParameterSpec.BitCost(projected);
+            EditorGUILayout.LabelField(
+                "Parameter budget",
+                $"{totalBits} / 256 bits after Apply ({ownBits} from this avatar's own parameters)");
+            if (totalBits > 256)
+            {
+                EditorGUILayout.HelpBox(
+                    $"Over VRChat's 256-bit synced parameter limit by {totalBits - 256} bits — " +
+                    "the SDK will refuse to build. Uncheck optional shapes above, pick the " +
+                    "Gestures hand mode (curls cost 80 bits), or turn off a toggle until this fits.",
+                    MessageType.Error);
+            }
+
             var wired = VrcExpressionParametersMerger.IsFullyWired(_avatar.expressionParameters, OscParameterSpec.Core);
             // Only the specs the current mode/toggles would wire count —
             // e.g. in gestures mode the 10 curl params are neither declared
@@ -198,7 +219,9 @@ namespace VRChatCameraOsc.AvatarSetup
                 case OscParamKind.ArmTracked:
                     return _includeArms;
                 default:
-                    return true;
+                    // Budget-excluded optionals aren't expected to have
+                    // layers either (issue #28 rollout).
+                    return !(spec.Optional && _excludedOptionals.Contains(spec.Name));
             }
         }
 
@@ -302,9 +325,34 @@ namespace VRChatCameraOsc.AvatarSetup
 
         void DrawBlendShapePicker(OscParamSpec spec, SkinnedMeshRenderer[] renderers)
         {
-            EditorGUILayout.LabelField(
-                spec.Optional ? spec.Name + "  (optional — declared only when wired)" : spec.Name,
-                EditorStyles.boldLabel);
+            if (spec.Optional && _positiveRenderer.ContainsKey(spec.Name))
+            {
+                // Wired optionals can still be deselected to fit VRChat's
+                // 256-bit synced-parameter budget (issue #28 rollout).
+                EditorGUILayout.BeginHorizontal();
+                var declare = !_excludedOptionals.Contains(spec.Name);
+                var newDeclare = EditorGUILayout.ToggleLeft(
+                    spec.Name + "  (optional — uncheck to skip declaring, saves 8 bits)",
+                    declare, EditorStyles.boldLabel);
+                if (newDeclare != declare)
+                {
+                    if (newDeclare)
+                    {
+                        _excludedOptionals.Remove(spec.Name);
+                    }
+                    else
+                    {
+                        _excludedOptionals.Add(spec.Name);
+                    }
+                }
+                EditorGUILayout.EndHorizontal();
+            }
+            else
+            {
+                EditorGUILayout.LabelField(
+                    spec.Optional ? spec.Name + "  (optional — declared only when wired)" : spec.Name,
+                    EditorStyles.boldLabel);
+            }
             EditorGUI.indentLevel++;
             DrawOneShapePicker(
                 spec.Kind == OscParamKind.EyeLid ? "Blink shape (inverted)" : "Blend shape",
@@ -365,7 +413,7 @@ namespace VRChatCameraOsc.AvatarSetup
             // Migrate a pre-issue-#21 (custom10) setup in place: strip the
             // retired parameters and their layers before wiring the v2/* set.
             RemoveLegacyCustom10(_avatar);
-            var toDeclare = SpecsToDeclare(_positiveRenderer.Keys, _handMode, _includeArms);
+            var toDeclare = SpecsToDeclare(_positiveRenderer.Keys, _handMode, _includeArms, _excludedOptionals);
             var added = VrcExpressionParametersMerger.Merge(expressionParameters, toDeclare);
             // Params deselected since a previous Apply — un-wired optionals,
             // the non-selected hand mode's set, arms with the toggle off:
@@ -376,7 +424,8 @@ namespace VRChatCameraOsc.AvatarSetup
                 expressionParameters,
                 OscParameterSpec.All.Select(s => s.Name).Where(n => !declaredNames.Contains(n)));
             var unwiredOptional = OscParameterSpec.All
-                .Where(s => s.Optional && !_positiveRenderer.ContainsKey(s.Name))
+                .Where(s => s.Optional &&
+                    (!_positiveRenderer.ContainsKey(s.Name) || _excludedOptionals.Contains(s.Name)))
                 .ToList();
 
             var controller = EnsureFxController(_avatar);
@@ -387,7 +436,8 @@ namespace VRChatCameraOsc.AvatarSetup
                 switch (spec.Kind)
                 {
                     case OscParamKind.BlendShape:
-                        if (_positiveRenderer.TryGetValue(spec.Name, out var r) &&
+                        if (!_excludedOptionals.Contains(spec.Name) &&
+                            _positiveRenderer.TryGetValue(spec.Name, out var r) &&
                             _positiveBlendShape.TryGetValue(spec.Name, out var shape))
                         {
                             OscAnimatorLayerBuilder.AddBlendShapeLayer(
@@ -662,7 +712,22 @@ namespace VRChatCameraOsc.AvatarSetup
         internal static List<OscParamSpec> SpecsToDeclare(
             IEnumerable<string> wiredParamNames, HandMode handMode, bool includeArms)
         {
+            return SpecsToDeclare(wiredParamNames, handMode, includeArms, new string[0]);
+        }
+
+        /// <summary>As above, minus any wired optional extras the user
+        /// deselected to stay inside VRChat's 256-bit synced parameter
+        /// budget (issue #28 rollout: the full wired set + hands + arms
+        /// exceeds it). Only Optional specs honor the exclusion — Core and
+        /// mode-gated sets are governed by their own toggles.</summary>
+        internal static List<OscParamSpec> SpecsToDeclare(
+            IEnumerable<string> wiredParamNames,
+            HandMode handMode,
+            bool includeArms,
+            IEnumerable<string> excludedOptionals)
+        {
             var wired = new HashSet<string>(wiredParamNames);
+            var excluded = new HashSet<string>(excludedOptionals);
             return OscParameterSpec.All
                 .Where(s =>
                 {
@@ -676,7 +741,8 @@ namespace VRChatCameraOsc.AvatarSetup
                         case OscParamKind.ArmTracked:
                             return includeArms;
                         default:
-                            return !s.Optional || wired.Contains(s.Name);
+                            return !s.Optional
+                                || (wired.Contains(s.Name) && !excluded.Contains(s.Name));
                     }
                 })
                 .ToList();

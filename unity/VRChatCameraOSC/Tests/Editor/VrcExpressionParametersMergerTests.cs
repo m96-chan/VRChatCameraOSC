@@ -174,6 +174,65 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         }
 
         [Test]
+        public void SpecsToDeclare_ExcludedOptionals_AreDroppedEvenWhenWired()
+        {
+            // Issue #28 rollout: the full wired set + hands + arms exceeds
+            // VRChat's 256-bit expression parameter budget, so wired optional
+            // extras must be individually deselectable. Core is never
+            // excludable.
+            var excluded = new[] { "v2/CheekPuffLeft", "v2/JawOpen" };
+            var specs = AvatarSetupWindow.SpecsToDeclare(
+                new[] { "v2/CheekPuffLeft", "v2/CheekPuffRight" },
+                HandMode.Off,
+                includeArms: false,
+                excludedOptionals: excluded);
+
+            Assert.IsFalse(specs.Any(s => s.Name == "v2/CheekPuffLeft"), "wired but excluded optional");
+            Assert.IsTrue(specs.Any(s => s.Name == "v2/CheekPuffRight"), "wired, not excluded");
+            Assert.IsTrue(specs.Any(s => s.Name == "v2/JawOpen"), "core ignores the exclusion list");
+            Assert.AreEqual(OscParameterSpec.Core.Count() + 1, specs.Count);
+        }
+
+        [Test]
+        public void BitCost_BoolsAreOneBit_IntsAndFloatsAreEight()
+        {
+            var tracked = OscParameterSpec.All.First(s => s.Kind == OscParamKind.ArmTracked);
+            var gesture = OscParameterSpec.All.First(s => s.Kind == OscParamKind.GestureInt);
+            var floatSpec = OscParameterSpec.All.First(s => s.Kind == OscParamKind.BlendShape);
+
+            Assert.AreEqual(1, OscParameterSpec.BitCost(tracked));
+            Assert.AreEqual(8, OscParameterSpec.BitCost(gesture));
+            Assert.AreEqual(8, OscParameterSpec.BitCost(floatSpec));
+
+            // The full arm set is the contract's 2 Bools + 6 Floats = 50.
+            Assert.AreEqual(50, OscParameterSpec.BitCost(OscParameterSpec.All.Where(s =>
+                s.Kind == OscParamKind.ArmTracked || s.Kind == OscParamKind.ArmFloat)));
+        }
+
+        [Test]
+        public void ForeignSyncedBits_CountsOnlyNonWizardSyncedParameters()
+        {
+            var asset = ScriptableObject.CreateInstance<VRCExpressionParameters>();
+            asset.parameters = new[]
+            {
+                // The avatar's own toggles: 2 synced Bools + 1 synced Int.
+                new VRCExpressionParameters.Parameter { name = "Hair", valueType = VRCExpressionParameters.ValueType.Bool, networkSynced = true },
+                new VRCExpressionParameters.Parameter { name = "Wing", valueType = VRCExpressionParameters.ValueType.Bool, networkSynced = true },
+                new VRCExpressionParameters.Parameter { name = "Outfit", valueType = VRCExpressionParameters.ValueType.Int, networkSynced = true },
+                // Non-synced costs nothing.
+                new VRCExpressionParameters.Parameter { name = "LocalOnly", valueType = VRCExpressionParameters.ValueType.Float, networkSynced = false },
+                // Wizard-owned names must not double-count.
+                new VRCExpressionParameters.Parameter { name = "v2/JawOpen", valueType = VRCExpressionParameters.ValueType.Float, networkSynced = true },
+                new VRCExpressionParameters.Parameter { name = "VCO_L_ArmTracked", valueType = VRCExpressionParameters.ValueType.Bool, networkSynced = true },
+            };
+
+            Assert.AreEqual(1 + 1 + 8, VrcExpressionParametersMerger.ForeignSyncedBits(asset));
+            Assert.AreEqual(0, VrcExpressionParametersMerger.ForeignSyncedBits(null));
+
+            Object.DestroyImmediate(asset);
+        }
+
+        [Test]
         public void Merge_DeclaresArmAndCurlFloats_WithZeroDefaults()
         {
             // The arm floats' 0 default matters doubly: it is also the value

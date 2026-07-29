@@ -96,6 +96,30 @@ namespace VRChatCameraOsc.AvatarSetup
             return removed;
         }
 
+        /// <summary>Synced bits the avatar's OWN parameters (everything not
+        /// named in <see cref="OscParameterSpec.All"/>) occupy in VRChat's
+        /// 256-bit budget — Bool 1, Int/Float 8, non-synced 0. The wizard's
+        /// projected total is these plus the to-declare set's cost (issue
+        /// #28 rollout: the full set no longer fits every avatar).</summary>
+        public static int ForeignSyncedBits(VRCExpressionParameters asset)
+        {
+            if (asset == null)
+            {
+                return 0;
+            }
+            var ours = new HashSet<string>(OscParameterSpec.All.Select(s => s.Name));
+            var total = 0;
+            foreach (var p in asset.parameters ?? new VRCExpressionParameters.Parameter[0])
+            {
+                if (p == null || !p.networkSynced || ours.Contains(p.name))
+                {
+                    continue;
+                }
+                total += p.valueType == VRCExpressionParameters.ValueType.Bool ? 1 : 8;
+            }
+            return total;
+        }
+
         /// <summary>Whether every VRChatCameraOSC parameter is already present.</summary>
         public static bool IsFullyWired(VRCExpressionParameters asset, IEnumerable<OscParamSpec> specs)
         {
