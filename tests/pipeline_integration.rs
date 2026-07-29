@@ -258,7 +258,7 @@ mod hands {
             Box::new(sink),
         )
         .with_hands(
-            Box::new(StubHandTracker(vec![open_hand(Handedness::Right)])),
+            Box::new(StubHandTracker(vec![open_hand(Handedness::Left)])),
             GestureMapper::new(GestureMapperConfig::default()),
             1,
         );
@@ -338,7 +338,7 @@ mod hands {
 
         let recorded = Arc::new(Mutex::new(Vec::new()));
         let sink = RecordingSink(recorded.clone());
-        let mut raised = open_hand(Handedness::Right);
+        let mut raised = open_hand(Handedness::Left);
         raised.points[0][1] = HEAD_TOP_Y; // wrist at the head top
         let mut pipeline = Pipeline::new(
             Box::new(FakeCamera::new(320, 240)),

@@ -327,10 +327,12 @@ impl GestureDebounce {
 #[derive(Debug, Clone, Copy)]
 pub struct GestureMapperConfig {
     /// How the model's handedness label maps to the user's physical hand.
-    /// The MediaPipe hand model labels handedness **assuming a mirrored
-    /// (selfie) image**; webcam frames are unmirrored, so with the default
-    /// `mirror = true` the label is swapped — the user's left hand lands on
-    /// `GestureLeft`. Set `false` for capture sources that already mirror.
+    /// Left/right slot assignment. Live-verified on real hardware
+    /// (2026-07-29): on our unmirrored webcam frames the model's handedness
+    /// label names the user's physical hand directly, so the default
+    /// `mirror = true` uses the label as-is (the user's left hand lands on
+    /// `GestureLeft`). Set `false` to swap, for capture sources that
+    /// pre-mirror the image.
     /// (Empirical validation with a live avatar is a phase-2 acceptance
     /// item; this flag is the calibration-free escape hatch either way.)
     pub mirror: bool,
@@ -447,9 +449,14 @@ impl GestureMapper {
         let mut left: Option<&HandFrame> = None;
         let mut right: Option<&HandFrame> = None;
         for hand in hands {
+            // Live-verified 2026-07-29 (issue #28: "raising the right hand
+            // raised the avatar's LEFT arm"): with our unmirrored webcam
+            // frames, the model's handedness label already names the user's
+            // physical hand — mirror=true keeps it, and the flag remains an
+            // escape hatch for capture sources that pre-mirror.
             let physical_left = match hand.handedness {
-                Handedness::Left => !self.config.mirror,
-                Handedness::Right => self.config.mirror,
+                Handedness::Left => self.config.mirror,
+                Handedness::Right => !self.config.mirror,
             };
             let slot = if physical_left { &mut left } else { &mut right };
             if slot.is_none_or(|h| hand.confidence > h.confidence) {
@@ -970,7 +977,7 @@ mod tests {
     #[test]
     fn curl_floats_follow_the_mirror_assignment() {
         let mut mapper = GestureMapper::new(GestureMapperConfig::default());
-        let fist = frame([false; 5], Handedness::Right);
+        let fist = frame([false; 5], Handedness::Left);
         let params = settle(&mut mapper, std::slice::from_ref(&fist));
         for stem in ["Thumb", "Index", "Middle", "Ring", "Little"] {
             let l = float_value(&params, &format!("VCO_L_{stem}Curl"));
@@ -985,8 +992,8 @@ mod tests {
     #[test]
     fn curl_floats_are_smoothed_not_snapped() {
         let mut mapper = GestureMapper::new(GestureMapperConfig::default());
-        let open = frame([true; 5], Handedness::Right);
-        let fist = frame([false; 5], Handedness::Right);
+        let open = frame([true; 5], Handedness::Left);
+        let fist = frame([false; 5], Handedness::Left);
         for _ in 0..30 {
             mapper.map(std::slice::from_ref(&open));
         }
@@ -1021,7 +1028,7 @@ mod tests {
         use crate::mapping::arm::{ArmMapper, HEAD_TOP_Y};
         let mut mapper =
             GestureMapper::new(GestureMapperConfig::default()).with_arms(ArmMapper::new());
-        let mut raised = frame([true; 5], Handedness::Right);
+        let mut raised = frame([true; 5], Handedness::Left);
         raised.points[WRIST][1] = HEAD_TOP_Y;
         let params = settle(&mut mapper, std::slice::from_ref(&raised));
         assert!(
@@ -1038,35 +1045,36 @@ mod tests {
 
     /// `mirror = true` (default, raw webcam): the model labels an unmirrored
     /// image's hands with the selfie convention, so its "Right" is the
-    /// user's left hand and must land on the Left params.
+    /// user's right hand and must land on the Right params — pinned by the
+    /// 2026-07-29 live round (arms were mirrored under the old assignment).
     #[test]
-    fn mirror_maps_model_right_to_gesture_left() {
+    fn mirror_maps_model_right_to_gesture_right() {
         let mut mapper = GestureMapper::new(GestureMapperConfig::default());
         let fist = frame([false; 5], Handedness::Right);
         let params = settle(&mut mapper, std::slice::from_ref(&fist));
-        assert_eq!(int_value(&params, "VCO_GestureLeft"), 1, "fist on left");
-        assert_eq!(int_value(&params, "VCO_GestureRight"), 0);
-        assert_eq!(int_value(&params, "GestureLeft"), 1);
+        assert_eq!(int_value(&params, "VCO_GestureRight"), 1, "fist on right");
+        assert_eq!(int_value(&params, "VCO_GestureLeft"), 0);
+        assert_eq!(int_value(&params, "GestureRight"), 1);
     }
 
     #[test]
-    fn mirror_off_uses_the_model_label_directly() {
+    fn mirror_off_swaps_the_model_label() {
         let mut mapper = GestureMapper::new(GestureMapperConfig {
             mirror: false,
             ..Default::default()
         });
         let fist = frame([false; 5], Handedness::Right);
         let params = settle(&mut mapper, std::slice::from_ref(&fist));
-        assert_eq!(int_value(&params, "VCO_GestureRight"), 1);
-        assert_eq!(int_value(&params, "VCO_GestureLeft"), 0);
+        assert_eq!(int_value(&params, "VCO_GestureLeft"), 1);
+        assert_eq!(int_value(&params, "VCO_GestureRight"), 0);
     }
 
     #[test]
     fn two_hands_drive_both_sides_independently() {
         let mut mapper = GestureMapper::new(GestureMapperConfig::default());
         let hands = [
-            frame([false; 5], Handedness::Right), // user's left: fist
-            frame([true, true, false, false, false], Handedness::Left), // user's right: gun
+            frame([false; 5], Handedness::Left), // user's left: fist
+            frame([true, true, false, false, false], Handedness::Right), // user's right: gun
         ];
         let params = settle(&mut mapper, &hands);
         assert_eq!(int_value(&params, "VCO_GestureLeft"), 1);
@@ -1079,9 +1087,9 @@ mod tests {
             mirror: false,
             ..Default::default()
         });
-        let mut weak = frame([false; 5], Handedness::Left); // fist
+        let mut weak = frame([false; 5], Handedness::Right); // fist
         weak.confidence = 0.6;
-        let strong = frame([true; 5], Handedness::Left); // open, confidence 0.95
+        let strong = frame([true; 5], Handedness::Right); // open, confidence 0.95
         let params = settle(&mut mapper, &[weak, strong]);
         assert_eq!(int_value(&params, "VCO_GestureLeft"), 2, "open hand wins");
     }
@@ -1089,7 +1097,7 @@ mod tests {
     #[test]
     fn losing_the_hand_returns_to_neutral_after_debounce() {
         let mut mapper = GestureMapper::new(GestureMapperConfig::default());
-        let fist = frame([false; 5], Handedness::Right);
+        let fist = frame([false; 5], Handedness::Left);
         let params = settle(&mut mapper, std::slice::from_ref(&fist));
         assert_eq!(int_value(&params, "VCO_GestureLeft"), 1);
 
@@ -1107,8 +1115,8 @@ mod tests {
     #[test]
     fn single_frame_glitches_do_not_change_the_gesture() {
         let mut mapper = GestureMapper::new(GestureMapperConfig::default());
-        let fist = frame([false; 5], Handedness::Right);
-        let open = frame([true; 5], Handedness::Right);
+        let fist = frame([false; 5], Handedness::Left);
+        let open = frame([true; 5], Handedness::Left);
         settle(&mut mapper, std::slice::from_ref(&fist));
         for _ in 0..3 {
             let params = mapper.map(std::slice::from_ref(&open));
