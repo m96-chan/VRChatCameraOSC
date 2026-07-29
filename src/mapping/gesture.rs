@@ -22,7 +22,16 @@
 //! native `GestureLeft`/`GestureRight` addresses when configured (default
 //! on: harmless today, free forward-compat if vrchat-community/osc#42 ever
 //! ships).
+//!
+//! Since issue #8 phase 3 the mapper also emits the **Tier-2 per-finger curl
+//! floats** (`VCO_L_ThumbCurl` .. `VCO_R_LittleCurl`, "Little" matching the
+//! Unity muscle naming) — the same [`finger_curls`] scalars the classifier
+//! consumes, One-Euro smoothed per channel — and can host an
+//! [`ArmMapper`](super::arm::ArmMapper) (issue #28) so the arm floats reuse
+//! the exact same left/right hand assignment as the gesture ints.
 
+use crate::mapping::arkit::OneEuro;
+use crate::mapping::arm::ArmMapper;
 use crate::osc::OscParam;
 use crate::tracking::hands::{
     HandFrame, Handedness, INDEX_DIP, INDEX_MCP, INDEX_PIP, INDEX_TIP, MIDDLE_DIP, MIDDLE_MCP,
@@ -32,11 +41,43 @@ use crate::tracking::hands::{
 
 /// Below this curl a finger reads **extended** (hysteresis low bar).
 pub const EXTEND_THRESHOLD: f32 = 0.35;
-/// Above this curl a finger reads **curled** (hysteresis high bar).
+/// Above this curl a finger reads **fully curled** (hysteresis high bar).
 pub const CURL_THRESHOLD: f32 = 0.65;
+/// Above this curl a finger reads at least **half-curled** ("not extended").
+///
+/// Threshold rationale (issue #8 live capture, 2026-07-29): on a real チョキ
+/// (Victory) the ring/little fingers are typically only *half*-curled —
+/// their [`chain_curl`] lands around 0.5–0.6, short of the 0.65 full-curl
+/// bar — so the strict `E E C C` pattern never matched and Victory never
+/// classified (Fist/HandOpen/ThumbsUp, whose fingers saturate, worked
+/// fine). The fix: multi-finger patterns (Victory, FingerPoint, HandGun,
+/// RockNRoll, and ThumbsUp's trailing fingers) only require their "curled"
+/// slots to be **not extended** (curl > 0.5 → [`FingerState::HalfCurled`]
+/// or better), while **Fist keeps requiring full curl** on all five so a
+/// loosely closed hand doesn't snap to Fist. 0.5 sits above the extended
+/// hysteresis band (0.35), leaving a 0.35–0.5 dead band between Extended
+/// and HalfCurled so a straight finger with noise doesn't flicker into
+/// half-curl patterns.
+pub const NOT_EXTENDED_THRESHOLD: f32 = 0.5;
 /// A new gesture must persist this many consecutive frames (~130 ms at
 /// 30 FPS) before it is emitted.
 pub const DEBOUNCE_FRAMES: u32 = 4;
+
+/// One-Euro min-cutoff for the Tier-2 curl floats — the "fast" expression
+/// class (AvataCam `FAST_MINCUTOFF`, same value as
+/// `ArkitMappingConfig::default().fast_mincutoff`): finger curls are quick,
+/// deliberate motions like blinks/speech, so the snappier cutoff.
+pub const CURL_MINCUTOFF: f32 = 4.0;
+/// One-Euro beta for the curl floats (AvataCam `EXPR_BETA`).
+pub const CURL_BETA: f32 = 0.5;
+/// Assumed seconds-per-frame for the curl filters (hand frames carry no
+/// timestamp — same simplification as `mapping::arkit`).
+const ASSUMED_DT: f32 = 1.0 / 30.0;
+
+/// Tier-2 curl parameter name stems, thumb→little. "Little" (not "Pinky")
+/// deliberately matches Unity's muscle naming — the `unity/` wizard binds
+/// `VCO_{L,R}_{stem}Curl` (kept in sync by hand, CLAUDE.md).
+const FINGER_NAMES: [&str; 5] = ["Thumb", "Index", "Middle", "Ring", "Little"];
 
 /// The standard VRChat gesture indices (0–7), exactly as documented at
 /// [creators.vrchat.com/avatars/animator-parameters](https://creators.vrchat.com/avatars/animator-parameters/).
@@ -154,18 +195,36 @@ pub fn finger_curls(p: &[[f32; 3]; NUM_HAND_LANDMARKS]) -> [f32; 5] {
 }
 
 /// A finger's hysteresis state. `Unknown` (start, or after losing the hand)
-/// matches only the `*` slots of the gesture table.
+/// matches only the `*` slots of the gesture table. `HalfCurled` ("clearly
+/// not extended, not fully folded" — the resting state of trailing fingers
+/// in real Victory/point/gun poses) satisfies the *not-extended* slots of
+/// multi-finger patterns but never Fist (see [`NOT_EXTENDED_THRESHOLD`]).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FingerState {
     #[default]
     Unknown,
     Extended,
+    HalfCurled,
     Curled,
 }
 
-/// Per-finger hysteresis: crossing [`EXTEND_THRESHOLD`] downward latches
-/// Extended, crossing [`CURL_THRESHOLD`] upward latches Curled, the band in
-/// between keeps the previous state.
+impl FingerState {
+    /// "Not extended": half-curled or fully curled — what the curled slots
+    /// of multi-finger gesture patterns accept.
+    pub fn not_extended(self) -> bool {
+        matches!(self, FingerState::HalfCurled | FingerState::Curled)
+    }
+}
+
+/// Per-finger hysteresis over the curl bands:
+///
+/// - `curl < 0.35` ([`EXTEND_THRESHOLD`]) latches **Extended**;
+/// - `curl > 0.65` ([`CURL_THRESHOLD`]) latches **Curled**;
+/// - `curl > 0.5` ([`NOT_EXTENDED_THRESHOLD`]) reads **HalfCurled**, except
+///   an already-Curled finger stays Curled (the 0.5–0.65 band is Curled's
+///   hysteresis hold zone, exactly as before);
+/// - `0.35..=0.5` keeps the previous state (the Extended↔HalfCurled dead
+///   band).
 #[derive(Debug, Default, Clone)]
 pub struct FingerHysteresis {
     states: [FingerState; 5],
@@ -178,6 +237,8 @@ impl FingerHysteresis {
                 *state = FingerState::Extended;
             } else if curl > CURL_THRESHOLD {
                 *state = FingerState::Curled;
+            } else if curl > NOT_EXTENDED_THRESHOLD && *state != FingerState::Curled {
+                *state = FingerState::HalfCurled;
             } // else: keep the previous state
         }
         self.states
@@ -190,29 +251,46 @@ impl FingerHysteresis {
 }
 
 /// Finger-state pattern `[thumb, index, middle, ring, pinky]` → gesture, per
-/// the table in issue #8 §4 (E = Extended, C = Curled, `*` = don't care):
+/// the table in issue #8 §4 (E = Extended, C = fully Curled, `c` = *not
+/// extended* — HalfCurled **or** Curled, `*` = don't care):
 ///
 /// | T I M R P | Gesture |
 /// |---|---|
-/// | C C C C C | 1 Fist |
+/// | C C C C C | 1 Fist — full curl only, a loose hand is not a fist |
 /// | * E E E E | 2 HandOpen (thumb E or C) |
-/// | * E C C E | 5 RockNRoll — before FingerPoint |
-/// | * E E C C | 4 Victory |
-/// | E E C C C | 6 HandGun — before FingerPoint (differs only in thumb) |
-/// | * E C C C (thumb not E) | 3 FingerPoint |
-/// | E C C C C | 7 ThumbsUp |
+/// | * E c c E | 5 RockNRoll — before FingerPoint |
+/// | * E E c c | 4 Victory |
+/// | E E c c c | 6 HandGun — before FingerPoint (differs only in thumb) |
+/// | * E c c c (thumb not E) | 3 FingerPoint |
+/// | E C c c c | 7 ThumbsUp |
 /// | anything else | 0 Neutral |
+///
+/// The `c` slots are forgiving (see [`NOT_EXTENDED_THRESHOLD`]): on real
+/// hands the fingers *behind* a pose only half-curl. Two deliberate strict
+/// spots remain: Fist requires full curl everywhere, and ThumbsUp requires a
+/// fully curled **index** — a half-curled index with the thumb out is the
+/// ambiguous midpoint between ThumbsUp and HandGun, so it stays Neutral
+/// rather than guessing.
 pub fn classify(states: &[FingerState; 5]) -> Gesture {
     use FingerState::{Curled as C, Extended as E};
-    match *states {
-        [C, C, C, C, C] => Gesture::Fist,
-        [_, E, E, E, E] => Gesture::HandOpen,
-        [_, E, C, C, E] => Gesture::RockNRoll,
-        [_, E, E, C, C] => Gesture::Victory,
-        [E, E, C, C, C] => Gesture::HandGun,
-        [t, E, C, C, C] if t != E => Gesture::FingerPoint,
-        [E, C, C, C, C] => Gesture::ThumbsUp,
-        _ => Gesture::Neutral,
+    let [t, i, m, r, p] = *states;
+    let c = FingerState::not_extended;
+    if [t, i, m, r, p].iter().all(|&s| s == C) {
+        Gesture::Fist
+    } else if i == E && m == E && r == E && p == E {
+        Gesture::HandOpen
+    } else if i == E && c(m) && c(r) && p == E {
+        Gesture::RockNRoll
+    } else if i == E && m == E && c(r) && c(p) {
+        Gesture::Victory
+    } else if t == E && i == E && c(m) && c(r) && c(p) {
+        Gesture::HandGun
+    } else if t != E && i == E && c(m) && c(r) && c(p) {
+        Gesture::FingerPoint
+    } else if t == E && i == C && c(m) && c(r) && c(p) {
+        Gesture::ThumbsUp
+    } else {
+        Gesture::Neutral
     }
 }
 
@@ -260,6 +338,12 @@ pub struct GestureMapperConfig {
     /// read-only in current VRChat (issue #8 §1) but harmless, and free
     /// forward-compat if vrchat-community/osc#42 ships. Default on.
     pub emit_native: bool,
+    /// Emit the Tier-2 per-finger curl floats
+    /// (`VCO_{L,R}_{Thumb,Index,Middle,Ring,Little}Curl`, 0 = straight ..
+    /// 1 = fully curled, One-Euro smoothed — issue #8 phase 3). Default on:
+    /// VRChat ignores undeclared parameters, so emitting is harmless; the
+    /// `unity/` wizard controls whether the avatar declares them.
+    pub finger_curls: bool,
 }
 
 impl Default for GestureMapperConfig {
@@ -267,31 +351,55 @@ impl Default for GestureMapperConfig {
         Self {
             mirror: true,
             emit_native: true,
+            finger_curls: true,
         }
     }
 }
 
-/// Per-hand-slot state: finger hysteresis + gesture debounce.
-#[derive(Debug, Default, Clone)]
+/// Per-hand-slot state: finger hysteresis + gesture debounce + the smoothed
+/// Tier-2 curl channels.
+#[derive(Debug, Clone)]
 struct SideState {
     hysteresis: FingerHysteresis,
     debounce: GestureDebounce,
+    curl_filters: [OneEuro; 5],
+    /// Last smoothed curls (thumb→little), the Tier-2 emission values.
+    curls: [f32; 5],
+}
+
+impl Default for SideState {
+    fn default() -> Self {
+        Self {
+            hysteresis: FingerHysteresis::default(),
+            debounce: GestureDebounce::default(),
+            curl_filters: [OneEuro::new(CURL_MINCUTOFF, CURL_BETA); 5],
+            curls: [0.0; 5],
+        }
+    }
 }
 
 impl SideState {
     fn step(&mut self, hand: Option<&HandFrame>) -> Gesture {
-        let raw = match hand {
+        let (raw, target) = match hand {
             Some(h) => {
                 let curls = finger_curls(&h.points);
-                classify(&self.hysteresis.update(curls))
+                (classify(&self.hysteresis.update(curls)), curls)
             }
             None => {
                 // No hand: forget the finger states so a reacquired hand
-                // starts clean, and settle (debounced) to Neutral.
+                // starts clean, settle (debounced) to Neutral, and let the
+                // curl floats relax toward 0 (straight) through the filter.
                 self.hysteresis.reset();
-                Gesture::Neutral
+                (Gesture::Neutral, [0.0; 5])
             }
         };
+        for (out, (filter, raw_curl)) in self
+            .curls
+            .iter_mut()
+            .zip(self.curl_filters.iter_mut().zip(target))
+        {
+            *out = filter.filter(raw_curl, ASSUMED_DT).clamp(0.0, 1.0);
+        }
         self.debounce.feed(raw)
     }
 }
@@ -302,6 +410,10 @@ pub struct GestureMapper {
     config: GestureMapperConfig,
     left: SideState,
     right: SideState,
+    /// Optional arm mapper (issue #28): fed the same side-assigned hands so
+    /// `VCO_*_ArmUpDown` and the gesture ints can never disagree about which
+    /// hand is "left".
+    arms: Option<ArmMapper>,
 }
 
 impl GestureMapper {
@@ -310,7 +422,15 @@ impl GestureMapper {
             config,
             left: SideState::default(),
             right: SideState::default(),
+            arms: None,
         }
+    }
+
+    /// Attach the arm mapper (issue #28): its `VCO_{L,R}_ArmUpDown` floats
+    /// are appended to every [`map`](Self::map) result.
+    pub fn with_arms(mut self, arms: ArmMapper) -> Self {
+        self.arms = Some(arms);
+        self
     }
 
     /// The gestures currently emitted for (left, right) — for the TUI.
@@ -348,6 +468,16 @@ impl GestureMapper {
             params.push(OscParam::int("GestureLeft", l.index()));
             params.push(OscParam::int("GestureRight", r.index()));
         }
+        if self.config.finger_curls {
+            for (side, curls) in [("L", &self.left.curls), ("R", &self.right.curls)] {
+                for (stem, v) in FINGER_NAMES.iter().zip(curls) {
+                    params.push(OscParam::float(format!("VCO_{side}_{stem}Curl"), *v));
+                }
+            }
+        }
+        if let Some(arms) = self.arms.as_mut() {
+            params.extend(arms.map(left, right));
+        }
         params
     }
 }
@@ -372,39 +502,75 @@ mod tests {
         ([0.60, 0.63, 0.0], PINKY_MCP),
     ];
 
-    /// Build a hand with the given per-finger extension pattern
-    /// (`[thumb, index, middle, ring, pinky]`, `true` = extended).
-    fn hand(extended: [bool; 5]) -> [[f32; 3]; NUM_HAND_LANDMARKS] {
+    /// A finger's synthetic pose: fully extended, realistically
+    /// half-curled (≈105° total joint bend → curl ≈ 0.58, inside the
+    /// `NOT_EXTENDED..CURL` band), or fully folded.
+    #[derive(Debug, Clone, Copy, PartialEq)]
+    enum Pose {
+        Ext,
+        Half,
+        Curl,
+    }
+
+    /// Build a hand with the given per-finger poses
+    /// (`[thumb, index, middle, ring, pinky]`).
+    fn hand_poses(poses: [Pose; 5]) -> [[f32; 3]; NUM_HAND_LANDMARKS] {
         let mut p = [[0.0f32; 3]; NUM_HAND_LANDMARKS];
         p[WRIST] = WRIST_P;
-        // Thumb base (CMC, MCP) is fixed; IP/TIP depend on the pattern.
+        // Thumb base (CMC, MCP) is fixed; IP/TIP depend on the pose.
         p[crate::tracking::hands::THUMB_CMC] = [0.42, 0.82, 0.0];
         p[crate::tracking::hands::THUMB_MCP] = [0.37, 0.76, 0.0];
-        if extended[0] {
-            // Splayed away from the palm (up-left).
-            p[THUMB_IP] = [0.32, 0.70, 0.0];
-            p[THUMB_TIP] = [0.27, 0.65, 0.0];
-        } else {
-            // Tucked across the palm, tip toward the pinky base.
-            p[THUMB_IP] = [0.45, 0.70, 0.0];
-            p[THUMB_TIP] = [0.50, 0.68, 0.0];
+        match poses[0] {
+            Pose::Ext => {
+                // Splayed away from the palm (up-left).
+                p[THUMB_IP] = [0.32, 0.70, 0.0];
+                p[THUMB_TIP] = [0.27, 0.65, 0.0];
+            }
+            Pose::Half => {
+                // Resting across the palm, tip barely nearer the pinky
+                // base than the IP is (margin ≈ −0.03 palms → curl ≈ 0.58).
+                p[THUMB_IP] = [0.45, 0.70, 0.0];
+                p[THUMB_TIP] = [0.455, 0.685, 0.0];
+            }
+            Pose::Curl => {
+                // Tucked across the palm, tip toward the pinky base.
+                p[THUMB_IP] = [0.45, 0.70, 0.0];
+                p[THUMB_TIP] = [0.50, 0.68, 0.0];
+            }
         }
         for (finger, &(mcp, mcp_idx)) in MCPS.iter().enumerate() {
             let (pip_i, dip_i, tip_i) = (mcp_idx + 1, mcp_idx + 2, mcp_idx + 3);
             p[mcp_idx] = mcp;
-            if extended[finger + 1] {
-                // Straight up from the MCP: zero joint bend.
-                p[pip_i] = [mcp[0], mcp[1] - 0.07, 0.0];
-                p[dip_i] = [mcp[0], mcp[1] - 0.12, 0.0];
-                p[tip_i] = [mcp[0], mcp[1] - 0.16, 0.0];
-            } else {
-                // Folded: PIP up, then DIP/TIP back down toward the palm.
-                p[pip_i] = [mcp[0], mcp[1] - 0.06, 0.0];
-                p[dip_i] = [mcp[0] + 0.01, mcp[1] - 0.01, 0.0];
-                p[tip_i] = [mcp[0] + 0.02, mcp[1] + 0.03, 0.0];
+            match poses[finger + 1] {
+                Pose::Ext => {
+                    // Straight up from the MCP: zero joint bend.
+                    p[pip_i] = [mcp[0], mcp[1] - 0.07, 0.0];
+                    p[dip_i] = [mcp[0], mcp[1] - 0.12, 0.0];
+                    p[tip_i] = [mcp[0], mcp[1] - 0.16, 0.0];
+                }
+                Pose::Half => {
+                    // 60° at the PIP + 45° at the DIP = 105°/180° ≈ 0.58 —
+                    // a relaxed, not deliberately squeezed finger (the ring
+                    // and little of a real チョキ).
+                    p[pip_i] = [mcp[0], mcp[1] - 0.06, 0.0];
+                    p[dip_i] = [mcp[0] + 0.0433, mcp[1] - 0.085, 0.0];
+                    p[tip_i] = [mcp[0] + 0.0819, mcp[1] - 0.0746, 0.0];
+                }
+                Pose::Curl => {
+                    // Folded: PIP up, then DIP/TIP back down toward the palm.
+                    p[pip_i] = [mcp[0], mcp[1] - 0.06, 0.0];
+                    p[dip_i] = [mcp[0] + 0.01, mcp[1] - 0.01, 0.0];
+                    p[tip_i] = [mcp[0] + 0.02, mcp[1] + 0.03, 0.0];
+                }
             }
         }
         p
+    }
+
+    /// Build a hand with the given per-finger extension pattern
+    /// (`[thumb, index, middle, ring, pinky]`, `true` = extended).
+    fn hand(extended: [bool; 5]) -> [[f32; 3]; NUM_HAND_LANDMARKS] {
+        hand_poses(extended.map(|e| if e { Pose::Ext } else { Pose::Curl }))
     }
 
     fn frame(extended: [bool; 5], handedness: Handedness) -> HandFrame {
@@ -503,11 +669,36 @@ mod tests {
         assert_eq!(s[0], FingerState::Unknown, "reset forgets the latch");
     }
 
+    #[test]
+    fn hysteresis_half_curl_band() {
+        let mut h = FingerHysteresis::default();
+        // From Extended, entering the 0.5–0.65 band reads HalfCurled.
+        h.update([0.2; 5]);
+        let s = h.update([0.55; 5]);
+        assert_eq!(s[0], FingerState::HalfCurled);
+        // The 0.35–0.5 band keeps HalfCurled (dead band toward Extended).
+        let s = h.update([0.45; 5]);
+        assert_eq!(s[0], FingerState::HalfCurled);
+        // Dropping below the extend bar releases it.
+        let s = h.update([0.3; 5]);
+        assert_eq!(s[0], FingerState::Extended);
+        // A fully Curled finger holds Curled through the same 0.5–0.65 band
+        // (unchanged hysteresis semantics).
+        h.update([0.7; 5]);
+        let s = h.update([0.55; 5]);
+        assert_eq!(s[0], FingerState::Curled);
+    }
+
     // --- classify: all 8 gestures ---------------------------------------
 
     fn classify_hand(extended: [bool; 5]) -> Gesture {
         let mut h = FingerHysteresis::default();
         classify(&h.update(finger_curls(&hand(extended))))
+    }
+
+    fn classify_poses(poses: [Pose; 5]) -> Gesture {
+        let mut h = FingerHysteresis::default();
+        classify(&h.update(finger_curls(&hand_poses(poses))))
     }
 
     #[test]
@@ -548,6 +739,83 @@ mod tests {
         assert_eq!(
             classify_hand([true, false, false, false, false]),
             Gesture::ThumbsUp
+        );
+    }
+
+    /// The half-curl geometry must land strictly between
+    /// [`NOT_EXTENDED_THRESHOLD`] and [`CURL_THRESHOLD`] — otherwise the
+    /// "realistic" tests below wouldn't exercise the forgiving band at all.
+    #[test]
+    fn half_poses_land_in_the_half_curl_band() {
+        let curls = finger_curls(&hand_poses([Pose::Half; 5]));
+        for (i, c) in curls.iter().enumerate() {
+            assert!(
+                *c > NOT_EXTENDED_THRESHOLD && *c < CURL_THRESHOLD,
+                "finger {i} curl {c} not in the half band"
+            );
+        }
+    }
+
+    /// The issue-#8 live-capture regression: a real チョキ leaves ring and
+    /// little only half-curled, which the old full-curl-only table read as
+    /// Neutral — Victory never appeared. Half-curled trailing fingers must
+    /// classify.
+    #[test]
+    fn realistic_half_curled_victory_classifies() {
+        use Pose::{Curl, Ext, Half};
+        assert_eq!(
+            classify_poses([Half, Ext, Ext, Half, Half]),
+            Gesture::Victory
+        );
+        assert_eq!(
+            classify_poses([Curl, Ext, Ext, Half, Half]),
+            Gesture::Victory
+        );
+        // Mixed half/full trailing fingers too.
+        assert_eq!(
+            classify_poses([Curl, Ext, Ext, Curl, Half]),
+            Gesture::Victory
+        );
+    }
+
+    /// Same forgiveness for the other multi-finger patterns.
+    #[test]
+    fn realistic_half_curled_point_gun_and_rocknroll_classify() {
+        use Pose::{Ext, Half};
+        assert_eq!(
+            classify_poses([Half, Ext, Half, Half, Half]),
+            Gesture::FingerPoint
+        );
+        assert_eq!(
+            classify_poses([Ext, Ext, Half, Half, Half]),
+            Gesture::HandGun
+        );
+        assert_eq!(
+            classify_poses([Half, Ext, Half, Half, Ext]),
+            Gesture::RockNRoll
+        );
+        // ThumbsUp's trailing fingers may relax; its index must stay fully
+        // curled (see `classify` docs).
+        assert_eq!(
+            classify_poses([Ext, Pose::Curl, Half, Half, Half]),
+            Gesture::ThumbsUp
+        );
+    }
+
+    /// Fist stays strict: a loosely closed (all-half-curled) hand is not a
+    /// fist, and a half-curled index with the thumb out is the ambiguous
+    /// ThumbsUp/HandGun midpoint — Neutral, not a guess.
+    #[test]
+    fn half_curls_do_not_satisfy_the_strict_slots() {
+        use Pose::{Curl, Ext, Half};
+        assert_eq!(classify_poses([Half; 5]), Gesture::Neutral);
+        assert_eq!(
+            classify_poses([Curl, Half, Curl, Curl, Curl]),
+            Gesture::Neutral
+        );
+        assert_eq!(
+            classify_poses([Ext, Half, Curl, Curl, Curl]),
+            Gesture::Neutral
         );
     }
 
@@ -634,6 +902,32 @@ mod tests {
         out
     }
 
+    fn float_value(params: &[OscParam], name: &str) -> f32 {
+        let p = params
+            .iter()
+            .find(|p| p.name == name)
+            .unwrap_or_else(|| panic!("{name} missing"));
+        match p.value {
+            OscValue::Float(v) => v,
+            ref other => panic!("{name} is not a float: {other:?}"),
+        }
+    }
+
+    /// The 10 Tier-2 curl parameter names of the fixed contract (issue #8
+    /// phase 3; "Little", not "Pinky", matching Unity muscle naming).
+    const CURL_NAMES: [&str; 10] = [
+        "VCO_L_ThumbCurl",
+        "VCO_L_IndexCurl",
+        "VCO_L_MiddleCurl",
+        "VCO_L_RingCurl",
+        "VCO_L_LittleCurl",
+        "VCO_R_ThumbCurl",
+        "VCO_R_IndexCurl",
+        "VCO_R_MiddleCurl",
+        "VCO_R_RingCurl",
+        "VCO_R_LittleCurl",
+    ];
+
     #[test]
     fn no_hands_emit_neutral_on_both_sides() {
         let mut mapper = GestureMapper::new(GestureMapperConfig::default());
@@ -642,7 +936,11 @@ mod tests {
         assert_eq!(int_value(&params, "VCO_GestureRight"), 0);
         assert_eq!(int_value(&params, "GestureLeft"), 0);
         assert_eq!(int_value(&params, "GestureRight"), 0);
-        assert_eq!(params.len(), 4);
+        // 4 gesture ints + the 10 curl floats (default on), all at 0.
+        assert_eq!(params.len(), 14);
+        for name in CURL_NAMES {
+            assert_eq!(float_value(&params, name), 0.0, "{name}");
+        }
     }
 
     #[test]
@@ -652,8 +950,90 @@ mod tests {
             ..Default::default()
         });
         let params = mapper.map(&[]);
-        assert_eq!(params.len(), 2);
+        assert_eq!(params.len(), 12, "2 ints + 10 curls");
         assert!(params.iter().all(|p| p.name.starts_with("VCO_")));
+    }
+
+    #[test]
+    fn finger_curls_off_drops_the_curl_floats() {
+        let mut mapper = GestureMapper::new(GestureMapperConfig {
+            finger_curls: false,
+            ..Default::default()
+        });
+        let params = mapper.map(&[]);
+        assert_eq!(params.len(), 4);
+        assert!(params.iter().all(|p| !p.name.ends_with("Curl")));
+    }
+
+    /// Curls follow the same mirror assignment as the gesture ints: the
+    /// model-Right hand is the user's left, so its curls land on `VCO_L_*`.
+    #[test]
+    fn curl_floats_follow_the_mirror_assignment() {
+        let mut mapper = GestureMapper::new(GestureMapperConfig::default());
+        let fist = frame([false; 5], Handedness::Right);
+        let params = settle(&mut mapper, std::slice::from_ref(&fist));
+        for stem in ["Thumb", "Index", "Middle", "Ring", "Little"] {
+            let l = float_value(&params, &format!("VCO_L_{stem}Curl"));
+            let r = float_value(&params, &format!("VCO_R_{stem}Curl"));
+            assert!(l > CURL_THRESHOLD, "L {stem} curled, got {l}");
+            assert_eq!(r, 0.0, "R {stem} idle");
+        }
+    }
+
+    /// The curl floats are One-Euro smoothed: a full open→fist step is not
+    /// covered in a single frame.
+    #[test]
+    fn curl_floats_are_smoothed_not_snapped() {
+        let mut mapper = GestureMapper::new(GestureMapperConfig::default());
+        let open = frame([true; 5], Handedness::Right);
+        let fist = frame([false; 5], Handedness::Right);
+        for _ in 0..30 {
+            mapper.map(std::slice::from_ref(&open));
+        }
+        let raw_fist_index = finger_curls(&fist.points)[1];
+        let params = mapper.map(std::slice::from_ref(&fist));
+        let v = float_value(&params, "VCO_L_IndexCurl");
+        assert!(v > 0.1, "moves toward the fist, got {v}");
+        assert!(
+            v < raw_fist_index - 0.1,
+            "one frame must not complete the step: {v} vs raw {raw_fist_index}"
+        );
+    }
+
+    /// Losing the hand relaxes the curls back toward 0 (straight) through
+    /// the filter instead of freezing them mid-pose.
+    #[test]
+    fn curl_floats_relax_to_zero_when_the_hand_is_lost() {
+        let mut mapper = GestureMapper::new(GestureMapperConfig::default());
+        let fist = frame([false; 5], Handedness::Right);
+        settle(&mut mapper, std::slice::from_ref(&fist));
+        let mut last = f32::MAX;
+        for _ in 0..30 {
+            last = float_value(&mapper.map(&[]), "VCO_L_IndexCurl");
+        }
+        assert!(last < 0.05, "curl still {last} after 30 empty frames");
+    }
+
+    /// `with_arms`: the arm floats ride along, on the same side assignment
+    /// (the model-Right hand raised to head height drives the LEFT arm).
+    #[test]
+    fn with_arms_appends_arm_floats_on_the_same_sides() {
+        use crate::mapping::arm::{ArmMapper, HEAD_TOP_Y};
+        let mut mapper =
+            GestureMapper::new(GestureMapperConfig::default()).with_arms(ArmMapper::new());
+        let mut raised = frame([true; 5], Handedness::Right);
+        raised.points[WRIST][1] = HEAD_TOP_Y;
+        let params = settle(&mut mapper, std::slice::from_ref(&raised));
+        assert!(
+            float_value(&params, "VCO_L_ArmUpDown") > 0.9,
+            "user's left arm raised"
+        );
+        assert_eq!(float_value(&params, "VCO_R_ArmUpDown"), 0.0);
+
+        // Without with_arms the params are absent.
+        let mut plain = GestureMapper::new(GestureMapperConfig::default());
+        let params = plain.map(&[]);
+        assert!(!params.iter().any(|p| p.name.ends_with("ArmUpDown")));
     }
 
     /// `mirror = true` (default, raw webcam): the model labels an unmirrored

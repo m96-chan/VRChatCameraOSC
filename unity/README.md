@@ -43,7 +43,9 @@ mirroring `src/mapping/unified.rs`):
 | `v2/MouthSmileLeft` / `v2/MouthSmileRight` | `0..1` | 0 | smile shape (shared shape OK) |
 | `v2/MouthStretchLeft` / `v2/MouthStretchRight` | `0..1` | 0 | mouth-widen shape (shared shape OK) |
 | `v2/Head/Yaw` / `v2/Head/Pitch` / `v2/Head/Roll` | `-1..1` | 0 | Humanoid head muscles — **one combined Gesture-layer blend tree** (issues #25/#27) |
-| `VCO_GestureLeft` / `VCO_GestureRight` | **Int** `0..7` | 0 | Humanoid finger muscles — one Gesture-layer hand-pose layer per hand ([issue #8](https://github.com/m96-chan/VRChatCameraOSC/issues/8), [below](#hand-gestures-vco_gestureleftright)) |
+| `VCO_GestureLeft` / `VCO_GestureRight` | **Int** `0..7` | 0 | Humanoid finger muscles — one Gesture-layer hand-pose layer per hand; declared only in the **Gestures** hand mode ([issue #8](https://github.com/m96-chan/VRChatCameraOSC/issues/8), [below](#hand-tracking-gestures-or-per-finger-curls)) |
+| `VCO_L_ThumbCurl` / `IndexCurl` / `MiddleCurl` / `RingCurl` / `LittleCurl` + `VCO_R_*` | `0..1` | 0 | Humanoid finger stretch muscles (0 = straight, 1 = fully curled) — one nested-blend-tree Gesture layer per hand; declared only in the **Per-finger curls** hand mode (issue #8 phase 3, [below](#hand-tracking-gestures-or-per-finger-curls)) |
+| `VCO_L_ArmUpDown` / `VCO_R_ArmUpDown` | `-1..1` | 0 | Humanoid arm muscles (+1 = straight up, -1 = hanging; exactly 0 = hand untracked → passthrough) — one Gesture layer per arm; declared only while the arm toggle is on ([issue #28](https://github.com/m96-chan/VRChatCameraOSC/issues/28), [below](#arm-raise-vco_lr_armupdown)) |
 
 Plus **optional extras** (issue #24) — declared (and costing expression
 parameter bits) **only when you wire a blend shape** to them:
@@ -79,20 +81,28 @@ every legacy parameter and `OSC_*` layer first, then wires the `v2/*` set —
 one click migrates in place. **Remove** also cleans both generations.
 Re-upload the avatar afterwards.
 
-### Hand gestures (`VCO_GestureLeft`/`Right`)
+### Hand tracking: Gestures or Per-finger curls
 
-VRChat's native `GestureLeft`/`GestureRight` parameters are **read-only over
-OSC** ([vrchat-community/osc#42](https://github.com/vrchat-community/osc/issues/42)),
+The wizard's **"Hand tracking mode"** is a 3-way choice — **Off / Gestures
+(default) / Per-finger curls**. The two "on" modes are **mutually exclusive
+by design**: both drive the same per-hand Fingers muscle group, and
+Unity/VRChat compose humanoid Override layers **per masked muscle group**
+(the issue #27 lesson) — two layers writing one group fight, last-one-wins
+for the whole group. Applying one mode removes the other mode's layers *and*
+its parameter declarations, so you only ever pay expression-parameter bits
+for the mode you use (2×8 bits for gestures vs. 10×8 bits for curls).
+
+**Gestures mode** — VRChat's native `GestureLeft`/`GestureRight` parameters
+are **read-only over OSC**
+([vrchat-community/osc#42](https://github.com/vrchat-community/osc/issues/42)),
 so the tracker's webcam hand tracking (issue #8) sends its own
 `VCO_GestureLeft`/`VCO_GestureRight` **Int** parameters instead — same
 standard 0–7 scale (0 Neutral, 1 Fist, 2 HandOpen, 3 FingerPoint, 4 Victory,
-5 RockNRoll, 6 HandGun, 7 ThumbsUp).
-
-Leave the wizard's **"Wire hand gestures"** toggle checked (default) and
-Apply adds one layer per hand to the Gesture controller
-(`OSC_VCO_GestureLeft` / `OSC_VCO_GestureRight`): 7 finger-muscle pose
-states switched by `Equals`-conditioned any-state transitions (0.1 s
-cross-fade), each layer masked to that hand's Fingers body part only.
+5 RockNRoll, 6 HandGun, 7 ThumbsUp). Apply adds one layer per hand to the
+Gesture controller (`OSC_VCO_GestureLeft` / `OSC_VCO_GestureRight`): 7
+finger-muscle pose states switched by `Equals`-conditioned any-state
+transitions (0.1 s cross-fade), each layer masked to that hand's Fingers
+body part only.
 
 **The Neutral state is deliberately empty** (no animation): while the
 parameter is 0 — tracker off, no hand on camera, or hand at rest — the layer
@@ -102,6 +112,57 @@ recognized camera gesture (1–7) overrides the pose, and it releases back to
 VRChat's control the moment the tracker returns to 0. Unlike head pose, no
 `VRCAnimatorTrackingControl` is involved — fingers aren't IK-held on
 Desktop, so plain muscle animation on the Gesture layer just works.
+
+**Per-finger curls mode** (issue #8 phase 3) — the tracker sends ten
+`VCO_L/R_{Thumb,Index,Middle,Ring,Little}Curl` floats (0 = straight, 1 =
+fully curled) and each hand gets ONE layer
+(`OSC_VCO_L_FingerCurls` / `OSC_VCO_R_FingerCurls`, again masked to that
+hand's Fingers part only): a nested Simple1D blend tree, depth 5
+(Thumb → Index → Middle → Ring → Little), two slots per level at thresholds
+0 and 1, bottoming out in 2⁵ = 32 pose clips. Every leaf writes **all 20**
+of that hand's finger muscles (the 15 stretch joints at +1 straight / −1
+curled; the 5 Spread muscles pinned at neutral 0) — the per-group override
+must always carry the whole group. Each finger blends independently and
+smoothly (a half-curled param sits halfway between its two slots). Note the
+trade-offs vs. gestures mode: 80 parameter bits instead of 16, and **no
+empty-Neutral passthrough** — the curl layers always own the fingers while
+applied, so VRChat's keyboard/controller gestures are overridden in this
+mode.
+
+### Arm raise (`VCO_L/R_ArmUpDown`)
+
+Issue #28 phase 1: raising a hand into the webcam frame should raise the
+avatar's **arm**, not just pose the fingers. Leave the wizard's **"Wire arm
+raise"** toggle checked (default) and Apply adds one layer per arm to the
+Gesture controller (`OSC_VCO_L_ArmUpDown` / `OSC_VCO_R_ArmUpDown`), masked
+to that arm's body part only, driven by the tracker's
+`VCO_L/R_ArmUpDown` float (**-1** = hanging, **0** = mid /
+forward-horizontal, **+1** = straight up):
+
+- The default **Neutral** state is EMPTY (no animation). The tracker sends
+  **exactly 0.0 while the hand is untracked**, and the layer only leaves
+  Neutral when the parameter escapes a ±0.02 deadband — so with no hand on
+  camera the layer writes nothing and **the avatar's own idle/locomotion arm
+  animation keeps playing**.
+- The **Active** state is a Simple1D blend tree with anchor poses at
+  -1 / 0 / +1; every anchor clip writes **all nine** of that arm's muscles
+  (shoulder ×2, upper arm ×3, forearm ×2, wrist ×2 — the same per-group
+  lesson as the head/fingers). Neutral ⇄ Active transitions cross-fade over
+  0.25 s, so gaining/losing hand tracking raises/lowers the arm smoothly.
+- The anchor pose values (hang: Arm Down-Up −0.5 with a slightly bent
+  forearm; mid: reach forward-horizontal; up: Arm Down-Up 1, straight
+  forearm) are **provisional** — tuned on paper, pending live verification
+  in VRChat. In particular the `* Front-Back` muscle sign follows the
+  "second word = +1" convention the verified head muscles use (so forward =
+  negative), which issue #28 flags as the likely sign-flip candidate.
+- No `VRCAnimatorTrackingControl`: Desktop arms are animation-driven (the
+  avatar's own idle animation moving them proves it). If live testing shows
+  IK stealing the arms after all, the fallback is the head-saga recipe
+  (TrackingControl + ping-pong exit-time states).
+- Like the head, the Gesture playable layer's **first-layer mask** must
+  allow the arm body parts (stock `vrc_HandsOnly` denies them) — Apply
+  extends its combined `OSC_GestureMask` accordingly (issue #25 behavior,
+  now covering Head + arms).
 
 ### Why head pose lives on the Gesture layer, not FX
 

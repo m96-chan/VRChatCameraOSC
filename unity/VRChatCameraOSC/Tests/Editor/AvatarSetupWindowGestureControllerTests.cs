@@ -201,6 +201,39 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             Assert.IsNull(bare.layers[0].avatarMask);
         }
 
+        // Issue #28: the arm layers need the first-layer AND-mask to allow
+        // the arm body parts too (vrc_HandsOnly denies them, same silent
+        // in-client inertness as the head). A combined mask made by an
+        // earlier head-only Apply must be extended in place, not duplicated.
+        [Test]
+        public void EnsureGestureMaskAllows_ArmParts_SwapsInCombinedMask_AndExtendsExistingOneInPlace()
+        {
+            var handsOnly = CreateHandsOnlyLikeMask("FakeHandsOnly");
+            var controller = ControllerWithFirstLayerMask(TestDir + "/Gesture.controller", handsOnly);
+            _descriptor.baseAnimationLayers = SingleGestureLayer(isDefault: false, controller);
+
+            // First a head-only Apply (the pre-arms wizard behavior)...
+            AvatarSetupWindow.EnsureGestureMaskAllowsHead(_descriptor, controller);
+            var combined = controller.layers[0].avatarMask;
+            Assert.IsFalse(combined.GetHumanoidBodyPartActive(AvatarMaskBodyPart.LeftArm));
+
+            // ...then a re-Apply that also wires arms.
+            AvatarSetupWindow.EnsureGestureMaskAllows(
+                _descriptor, controller,
+                new[] { AvatarMaskBodyPart.Head, AvatarMaskBodyPart.LeftArm, AvatarMaskBodyPart.RightArm });
+
+            Assert.AreSame(combined, controller.layers[0].avatarMask, "extended in place, not replaced");
+            Assert.IsTrue(combined.GetHumanoidBodyPartActive(AvatarMaskBodyPart.Head));
+            Assert.IsTrue(combined.GetHumanoidBodyPartActive(AvatarMaskBodyPart.LeftArm));
+            Assert.IsTrue(combined.GetHumanoidBodyPartActive(AvatarMaskBodyPart.RightArm));
+            Assert.IsTrue(combined.GetHumanoidBodyPartActive(AvatarMaskBodyPart.LeftFingers), "original parts preserved");
+            Assert.IsFalse(combined.GetHumanoidBodyPartActive(AvatarMaskBodyPart.Body), "denied parts stay denied");
+            var count = AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(controller))
+                .OfType<AvatarMask>()
+                .Count(m => m.name == AvatarSetupWindow.GestureMaskName);
+            Assert.AreEqual(1, count, "still a single combined mask sub-asset");
+        }
+
         [Test]
         public void RestoreGestureMask_SwapsBackAndDeletesCombinedSubAsset()
         {

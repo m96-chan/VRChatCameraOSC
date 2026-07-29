@@ -16,9 +16,13 @@
 //! - [`arkit`] — shared calibration/smoothing machinery (One-Euro filters,
 //!   neutral baselines, deadzone), ported from AvataCam.
 //! - [`gesture`] — 21 hand landmarks → VRChat gesture ints
-//!   (`VCO_GestureLeft/Right` + optional native addresses, issue #8).
+//!   (`VCO_GestureLeft/Right` + optional native addresses, issue #8) and
+//!   Tier-2 per-finger curl floats (`VCO_*Curl`, issue #8 phase 3).
+//! - [`arm`] — wrist height → `VCO_{L,R}_ArmUpDown` arm-raise floats
+//!   (issue #28 phase 1).
 
 pub mod arkit;
+pub mod arm;
 pub mod avatar;
 pub mod eye;
 pub mod gesture;

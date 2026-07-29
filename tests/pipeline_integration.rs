@@ -271,6 +271,10 @@ mod hands {
         assert_eq!(int_param(&outcome.params, "VCO_GestureLeft"), Some(2));
         assert_eq!(int_param(&outcome.params, "VCO_GestureRight"), Some(0));
         assert_eq!(int_param(&outcome.params, "GestureLeft"), Some(2));
+        // Tier-2 curls (issue #8 phase 3, default on) flow with the ints.
+        let names: Vec<&str> = outcome.params.iter().map(|p| p.name.as_str()).collect();
+        assert!(names.contains(&"VCO_L_IndexCurl"));
+        assert!(names.contains(&"VCO_R_LittleCurl"));
         assert!(!recorded.lock().unwrap().is_empty(), "params were sent");
     }
 
@@ -293,9 +297,9 @@ mod hands {
             2,
         );
 
-        // Interval 2: frames 0, 2 run the hand stage (2 params each);
-        // frames 1, 3 skip it entirely.
-        let per_hand_frame = 2;
+        // Interval 2: frames 0, 2 run the hand stage (2 gesture ints + 10
+        // curl floats each); frames 1, 3 skip it entirely.
+        let per_hand_frame = 12;
         for (i, expect) in [(0u32, per_hand_frame), (1, 0), (2, per_hand_frame), (3, 0)] {
             let outcome = pipeline.step().unwrap();
             assert_eq!(outcome.params.len(), expect, "frame {i}");
@@ -323,6 +327,45 @@ mod hands {
         assert!(names.contains(&"v2/JawOpen"), "face params still present");
         assert!(names.contains(&"VCO_GestureLeft"));
         assert!(names.contains(&"VCO_GestureRight"));
+    }
+
+    /// Arm floats (issue #28): a GestureMapper with an attached ArmMapper
+    /// sends VCO_{L,R}_ArmUpDown through the pipeline; a raised wrist reads
+    /// positive on the mirrored (user-left) side.
+    #[test]
+    fn arm_params_flow_through_the_pipeline() {
+        use vrchat_camera_osc::mapping::arm::{ArmMapper, HEAD_TOP_Y};
+
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let sink = RecordingSink(recorded.clone());
+        let mut raised = open_hand(Handedness::Right);
+        raised.points[0][1] = HEAD_TOP_Y; // wrist at the head top
+        let mut pipeline = Pipeline::new(
+            Box::new(FakeCamera::new(320, 240)),
+            None,
+            mapper(),
+            Box::new(sink),
+        )
+        .with_hands(
+            Box::new(StubHandTracker(vec![raised])),
+            GestureMapper::new(GestureMapperConfig::default()).with_arms(ArmMapper::new()),
+            1,
+        );
+
+        let outcome = pipeline.step().unwrap();
+        let float = |name: &str| {
+            outcome
+                .params
+                .iter()
+                .find(|p| p.name == name)
+                .map(|p| match p.value {
+                    OscValue::Float(v) => v,
+                    ref other => panic!("{name} not a float: {other:?}"),
+                })
+                .unwrap_or_else(|| panic!("{name} missing"))
+        };
+        assert!(float("VCO_L_ArmUpDown") > 0.9, "user's left arm raised");
+        assert_eq!(float("VCO_R_ArmUpDown"), 0.0, "right arm idle");
     }
 }
 

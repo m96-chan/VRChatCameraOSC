@@ -330,7 +330,40 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
                         OscAnimatorLayerBuilder.AddHandGestureLayer(
                             controller, spec.Name == OscAnimatorLayerBuilder.GestureLeftParam);
                         break;
+                    case OscParamKind.FingerCurl:
+                        // Five specs share one per-hand layer (the wizard
+                        // never wires curls AND gestures together, but the
+                        // builder allows it — exclusivity is ApplyHandMode's
+                        // job, tested in OscFingerCurlLayerTests).
+                        var left = spec.Name.StartsWith("VCO_L_");
+                        var key = left
+                            ? OscAnimatorLayerBuilder.FingerCurlLeftKey
+                            : OscAnimatorLayerBuilder.FingerCurlRightKey;
+                        if (!OscAnimatorLayerBuilder.HasLayer(controller, key))
+                        {
+                            OscAnimatorLayerBuilder.AddFingerCurlLayer(controller, left);
+                        }
+                        break;
+                    case OscParamKind.ArmUpDown:
+                        OscAnimatorLayerBuilder.AddArmLayer(
+                            controller, spec.Name == OscAnimatorLayerBuilder.ArmLeftParam);
+                        break;
                 }
+            }
+        }
+
+        static string LayerKeyFor(OscParamSpec spec)
+        {
+            switch (spec.Kind)
+            {
+                case OscParamKind.HeadPose:
+                    return OscAnimatorLayerBuilder.CombinedHeadKey;
+                case OscParamKind.FingerCurl:
+                    return spec.Name.StartsWith("VCO_L_")
+                        ? OscAnimatorLayerBuilder.FingerCurlLeftKey
+                        : OscAnimatorLayerBuilder.FingerCurlRightKey;
+                default:
+                    return spec.Name;
             }
         }
 
@@ -342,15 +375,17 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             Assert.AreEqual(OscParameterSpec.All.Count, _controller.parameters.Length);
             // CreateAnimatorControllerAtPath seeds one default "Base Layer";
             // AddLayer only ever replaces layers it owns (named "OSC_*").
-            // The three head axes share ONE combined layer (issue #27).
+            // The three head axes share ONE combined layer (issue #27) and
+            // each hand's five curl floats share one per-hand layer.
             var headCount = OscParameterSpec.All.Count(s => s.Kind == OscParamKind.HeadPose);
+            var curlCount = OscParameterSpec.All.Count(s => s.Kind == OscParamKind.FingerCurl);
             Assert.AreEqual(
-                OscParameterSpec.All.Count - headCount + 1,
+                OscParameterSpec.All.Count - headCount + 1 - curlCount + 2,
                 _controller.layers.Count(l => l.name.StartsWith("OSC_")));
             foreach (var spec in OscParameterSpec.All)
             {
-                var key = spec.Kind == OscParamKind.HeadPose ? OscAnimatorLayerBuilder.CombinedHeadKey : spec.Name;
-                Assert.IsTrue(OscAnimatorLayerBuilder.HasLayer(_controller, key), $"missing layer for {spec.Name}");
+                Assert.IsTrue(OscAnimatorLayerBuilder.HasLayer(_controller, LayerKeyFor(spec)),
+                    $"missing layer for {spec.Name}");
             }
         }
 
@@ -360,7 +395,7 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             WireAll(_controller, _avatarRoot.transform, _renderer);
 
             var keys = OscParameterSpec.All
-                .Select(s => s.Kind == OscParamKind.HeadPose ? OscAnimatorLayerBuilder.CombinedHeadKey : s.Name)
+                .Select(LayerKeyFor)
                 .Distinct();
             foreach (var key in keys)
             {

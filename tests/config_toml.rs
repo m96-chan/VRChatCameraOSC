@@ -285,7 +285,7 @@ fn oscquery_defaults_on_and_is_configurable() {
 }
 
 // Hand tracking (issue #8): [hands] enabled / mirror / max_hands /
-// emit_native / interval.
+// emit_native / interval / finger_curls (phase 3) / arms (issue #28).
 #[test]
 fn hands_defaults_and_legacy_files_without_the_section() {
     let d = Config::default().hands;
@@ -294,6 +294,8 @@ fn hands_defaults_and_legacy_files_without_the_section() {
     assert_eq!(d.max_hands, 2);
     assert!(d.emit_native);
     assert_eq!(d.interval, 1);
+    assert!(d.finger_curls, "Tier-2 curls default on");
+    assert!(d.arms, "arm floats default on");
 
     // A config file written before [hands] existed still loads (defaults).
     let cfg: Config = toml::from_str("[osc]\nport = 9000\n").unwrap();
@@ -311,6 +313,8 @@ fn hands_section_round_trips() {
     cfg.hands.max_hands = 1;
     cfg.hands.emit_native = false;
     cfg.hands.interval = 2;
+    cfg.hands.finger_curls = false;
+    cfg.hands.arms = false;
 
     let dir = TempDir::new("hands-roundtrip");
     let path = dir.join("config.toml");

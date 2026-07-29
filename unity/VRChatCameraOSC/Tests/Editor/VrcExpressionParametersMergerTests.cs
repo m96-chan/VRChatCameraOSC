@@ -117,16 +117,76 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         public void SpecsToDeclare_IncludesCoreAlways_OptionalsOnlyWhenWired()
         {
             // Issue #24: unwired optional extras must not be declared (they
-            // would cost expression-parameter bits for nothing).
-            var none = AvatarSetupWindow.SpecsToDeclare(new string[0]);
+            // would cost expression-parameter bits for nothing). With hands
+            // off and arms off, exactly the Core set remains.
+            var none = AvatarSetupWindow.SpecsToDeclare(new string[0], HandMode.Off, includeArms: false);
             CollectionAssert.AreEquivalent(
                 OscParameterSpec.Core.Select(s => s.Name).ToArray(),
                 none.Select(s => s.Name).ToArray());
 
-            var withPuff = AvatarSetupWindow.SpecsToDeclare(new[] { "v2/CheekPuffLeft", "v2/JawOpen" });
+            var withPuff = AvatarSetupWindow.SpecsToDeclare(
+                new[] { "v2/CheekPuffLeft", "v2/JawOpen" }, HandMode.Off, includeArms: false);
             Assert.IsTrue(withPuff.Any(s => s.Name == "v2/CheekPuffLeft"));
             Assert.IsFalse(withPuff.Any(s => s.Name == "v2/CheekPuffRight"));
             Assert.AreEqual(OscParameterSpec.Core.Count() + 1, withPuff.Count);
+        }
+
+        [Test]
+        public void SpecsToDeclare_HandAndArmDeclarationsFollowTheSelectedMode()
+        {
+            // Issue #8 phase 3 / issue #28: gesture ints only in Gestures
+            // mode, curl floats only in FingerCurls mode (10 floats = 80
+            // bits — never ride along unused), arm floats only with the arm
+            // toggle on.
+            var gestures = AvatarSetupWindow.SpecsToDeclare(new string[0], HandMode.Gestures, includeArms: false)
+                .Select(s => s.Name).ToArray();
+            Assert.Contains("VCO_GestureLeft", gestures);
+            Assert.Contains("VCO_GestureRight", gestures);
+            Assert.IsFalse(gestures.Any(n => n.EndsWith("Curl")), "no curl floats in gestures mode");
+            Assert.IsFalse(gestures.Any(n => n.Contains("ArmUpDown")), "no arm floats with arms off");
+
+            var curls = AvatarSetupWindow.SpecsToDeclare(new string[0], HandMode.FingerCurls, includeArms: false)
+                .Select(s => s.Name).ToArray();
+            Assert.AreEqual(10, curls.Count(n => n.EndsWith("Curl")), "all 10 curl floats in curls mode");
+            foreach (var side in new[] { "L", "R" })
+            {
+                foreach (var finger in new[] { "Thumb", "Index", "Middle", "Ring", "Little" })
+                {
+                    Assert.Contains($"VCO_{side}_{finger}Curl", curls);
+                }
+            }
+            Assert.IsFalse(curls.Any(n => n.StartsWith("VCO_Gesture")), "no gesture ints in curls mode");
+
+            var arms = AvatarSetupWindow.SpecsToDeclare(new string[0], HandMode.Off, includeArms: true)
+                .Select(s => s.Name).ToArray();
+            Assert.Contains("VCO_L_ArmUpDown", arms);
+            Assert.Contains("VCO_R_ArmUpDown", arms);
+            Assert.AreEqual(OscParameterSpec.Core.Count() + 2, arms.Length);
+        }
+
+        [Test]
+        public void Merge_DeclaresArmAndCurlFloats_WithZeroDefaults()
+        {
+            // The arm params' 0 default matters doubly: it is also the
+            // tracker's explicit "hand untracked" value, which the arm
+            // layer's deadband maps to the empty Neutral passthrough state.
+            var asset = ScriptableObject.CreateInstance<VRCExpressionParameters>();
+            asset.parameters = new VRCExpressionParameters.Parameter[0];
+
+            VrcExpressionParametersMerger.Merge(
+                asset,
+                OscParameterSpec.All.Where(s =>
+                    s.Kind == OscParamKind.FingerCurl || s.Kind == OscParamKind.ArmUpDown));
+
+            Assert.AreEqual(12, asset.parameters.Length);
+            foreach (var p in asset.parameters)
+            {
+                Assert.AreEqual(VRCExpressionParameters.ValueType.Float, p.valueType, p.name);
+                Assert.AreEqual(0f, p.defaultValue, 1e-6f, p.name);
+                Assert.IsTrue(p.networkSynced, p.name);
+            }
+
+            Object.DestroyImmediate(asset);
         }
 
         [Test]

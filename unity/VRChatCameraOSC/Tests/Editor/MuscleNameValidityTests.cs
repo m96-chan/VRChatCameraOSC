@@ -65,6 +65,40 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
                 "a bogus finger name should not bind");
         }
 
+        // Arm muscles (issue #28): expect the head-style behavior — the
+        // HumanTrait.MuscleName spellings ("Left Arm Down-Up") ARE the
+        // animatable curve property names, unlike the finger quirk above.
+        // Verify all 9 per-arm names empirically: present in HumanTrait AND
+        // a clip bound with that exact spelling registers as humanoid
+        // motion (clip.humanMotion).
+        [Test]
+        public void ArmMuscleBindingProperties_AreRealHumanoidMuscles()
+        {
+            var traitNames = HumanTrait.MuscleName;
+            foreach (var n in traitNames.Where(n =>
+                n.Contains("Arm") || n.Contains("Forearm") || n.Contains("Shoulder") ||
+                (n.Contains("Hand") && !n.Contains("."))))
+            {
+                Debug.Log($"HumanTrait arm muscle: '{n}'");
+            }
+
+            foreach (var left in new[] { true, false })
+            {
+                var props = OscAnimatorLayerBuilder.ArmMuscleProperties(left).ToArray();
+                Assert.AreEqual(9, props.Length, "9 muscles per arm group");
+                foreach (var prop in props)
+                {
+                    Assert.Contains(prop, traitNames, $"'{prop}' is not a real HumanTrait muscle name");
+                    Assert.IsTrue(BindsHumanoidMuscle(prop),
+                        $"'{prop}' does not bind a humanoid muscle curve");
+                }
+            }
+
+            // Control group: a made-up arm muscle must not bind.
+            Assert.IsFalse(BindsHumanoidMuscle("Left Arm Up-Down"),
+                "a bogus arm muscle name should not bind");
+        }
+
         static bool BindsHumanoidMuscle(string propertyName)
         {
             var clip = new AnimationClip();

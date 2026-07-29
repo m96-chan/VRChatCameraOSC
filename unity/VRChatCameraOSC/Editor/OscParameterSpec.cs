@@ -28,8 +28,48 @@ namespace VRChatCameraOsc.AvatarSetup
         /// 1 Fist … 7 ThumbsUp), driving finger-muscle hand poses on the
         /// Gesture layer (issue #8). Declared as an <b>Int</b> expression
         /// parameter, not Float. No blend shape to pick — muscle-driven, so
-        /// the wizard's picker UI skips it entirely.</summary>
+        /// the wizard's picker UI skips it entirely. Declared only in the
+        /// <see cref="HandMode.Gestures"/> hand mode — mutually exclusive
+        /// with <see cref="FingerCurl"/> (both drive the same Fingers
+        /// muscle group; two layers masking one group fight, issue #27).</summary>
         GestureInt,
+
+        /// <summary>Float 0..1 per-finger curl (issue #8 phase 3): 0 =
+        /// straight, 1 = fully curled. Drives that finger's three
+        /// "Stretched" joint muscles on the Gesture layer via ONE per-hand
+        /// nested blend tree. Declared only in the
+        /// <see cref="HandMode.FingerCurls"/> hand mode — mutually
+        /// exclusive with <see cref="GestureInt"/>.</summary>
+        FingerCurl,
+
+        /// <summary>Float -1..1 arm raise (issue #28): +1 = arm straight up,
+        /// -1 = hanging, exactly 0.0 = hand untracked (the tracker's
+        /// contract) — the layer's deadband parks in an empty Neutral state
+        /// there so idle/locomotion arm animation passes through. Declared
+        /// only when the wizard's arm toggle is on.</summary>
+        ArmUpDown,
+    }
+
+    /// <summary>
+    /// How the wizard wires webcam hand tracking (issue #8). The two "on"
+    /// modes are mutually exclusive by construction: gesture poses and
+    /// per-finger curls both write the same per-hand Fingers muscle group,
+    /// and Unity/VRChat compose humanoid Override layers per masked muscle
+    /// GROUP (issue #27) — two layers on one group fight, last-one-wins.
+    /// Applying one mode removes the other's layers and declarations.
+    /// </summary>
+    public enum HandMode
+    {
+        /// <summary>No hand layers; no hand parameters declared.</summary>
+        Off,
+
+        /// <summary>VCO_GestureLeft/Right Int 0-7 pose layers (default).</summary>
+        Gestures,
+
+        /// <summary>VCO_*Curl Float per-finger curl layers (10 floats =
+        /// 80 expression-parameter bits — noticeably more than the two
+        /// gesture ints).</summary>
+        FingerCurls,
     }
 
     /// <summary>One OSC parameter this app sends, and how an avatar should react.</summary>
@@ -104,9 +144,30 @@ namespace VRChatCameraOsc.AvatarSetup
             // are read-only over OSC (vrchat-community/osc#42), so the
             // tracker sends these instead. Values keep the standard 0-7
             // scale (0 Neutral, 1 Fist, 2 HandOpen, 3 FingerPoint, 4 Victory,
-            // 5 RockNRoll, 6 HandGun, 7 ThumbsUp). Always declared (core).
+            // 5 RockNRoll, 6 HandGun, 7 ThumbsUp). Declared only in the
+            // Gestures hand mode (mode-gated, not core).
             new OscParamSpec("VCO_GestureLeft", 0f, 7f, 0f, OscParamKind.GestureInt),
             new OscParamSpec("VCO_GestureRight", 0f, 7f, 0f, OscParamKind.GestureInt),
+            // Per-finger curls (issue #8 phase 3): 0 = straight, 1 = fully
+            // curled. Declared only in the FingerCurls hand mode — 10 floats
+            // cost 80 expression-parameter bits, so they must never ride
+            // along in gestures mode (declare-only-when-used, issue #24).
+            new OscParamSpec("VCO_L_ThumbCurl", 0f, 1f, 0f, OscParamKind.FingerCurl),
+            new OscParamSpec("VCO_L_IndexCurl", 0f, 1f, 0f, OscParamKind.FingerCurl),
+            new OscParamSpec("VCO_L_MiddleCurl", 0f, 1f, 0f, OscParamKind.FingerCurl),
+            new OscParamSpec("VCO_L_RingCurl", 0f, 1f, 0f, OscParamKind.FingerCurl),
+            new OscParamSpec("VCO_L_LittleCurl", 0f, 1f, 0f, OscParamKind.FingerCurl),
+            new OscParamSpec("VCO_R_ThumbCurl", 0f, 1f, 0f, OscParamKind.FingerCurl),
+            new OscParamSpec("VCO_R_IndexCurl", 0f, 1f, 0f, OscParamKind.FingerCurl),
+            new OscParamSpec("VCO_R_MiddleCurl", 0f, 1f, 0f, OscParamKind.FingerCurl),
+            new OscParamSpec("VCO_R_RingCurl", 0f, 1f, 0f, OscParamKind.FingerCurl),
+            new OscParamSpec("VCO_R_LittleCurl", 0f, 1f, 0f, OscParamKind.FingerCurl),
+            // Arm raise (issue #28 phase 1): -1 hanging .. +1 straight up;
+            // the tracker sends exactly 0.0 while the hand is untracked, so
+            // the arm layer's deadband hands control back to idle/locomotion.
+            // Declared only when the wizard's arm toggle is on.
+            new OscParamSpec("VCO_L_ArmUpDown", -1f, 1f, 0f, OscParamKind.ArmUpDown),
+            new OscParamSpec("VCO_R_ArmUpDown", -1f, 1f, 0f, OscParamKind.ArmUpDown),
             // ---- Optional extras (issue #24): declared only when wired, so
             // they cost expression-parameter bits only on avatars that have
             // the shapes. All are ARKit-52-drivable and already emitted by
@@ -130,14 +191,28 @@ namespace VRChatCameraOsc.AvatarSetup
             new OscParamSpec("v2/NoseSneerRight", 0f, 1f, 0f, OscParamKind.BlendShape, fullScale: 0.5f, optional: true),
         };
 
-        /// <summary>The always-declared subset (`Optional == false`).</summary>
+        /// <summary>Kinds whose declaration follows a wizard mode/toggle
+        /// (hand mode, arm toggle) instead of being always-core: hand
+        /// gestures vs. per-finger curls are mutually exclusive, and every
+        /// unused declaration costs expression-parameter bits (issue #24's
+        /// declare-only-when-used philosophy).</summary>
+        public static bool IsModeGated(OscParamKind kind)
+        {
+            return kind == OscParamKind.GestureInt
+                || kind == OscParamKind.FingerCurl
+                || kind == OscParamKind.ArmUpDown;
+        }
+
+        /// <summary>The always-declared subset: not Optional (issue #24
+        /// wired-only extras) and not mode-gated (hand/arm declarations
+        /// follow the wizard's selected mode/toggles).</summary>
         public static System.Collections.Generic.IEnumerable<OscParamSpec> Core
         {
             get
             {
                 foreach (var s in All)
                 {
-                    if (!s.Optional)
+                    if (!s.Optional && !IsModeGated(s.Kind))
                     {
                         yield return s;
                     }

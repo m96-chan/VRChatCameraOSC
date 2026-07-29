@@ -29,6 +29,7 @@ use ratatui::Terminal;
 use vrchat_camera_osc::capture::{CameraSource, FakeCamera, FpsCounter};
 use vrchat_camera_osc::config::Config;
 use vrchat_camera_osc::mapping::arkit::ArkitMappingConfig;
+use vrchat_camera_osc::mapping::arm::ArmMapper;
 use vrchat_camera_osc::mapping::avatar::{self, AvatarWatcher};
 use vrchat_camera_osc::mapping::eye::{EyeRange, NativeEyeMapper};
 use vrchat_camera_osc::mapping::gesture::{gesture_name, GestureMapper, GestureMapperConfig};
@@ -239,10 +240,16 @@ fn build_hands(cfg: &Config) -> Option<(Box<dyn HandTracker>, GestureMapper, u32
     match HandsTracker::from_paths(&palm, &landmarks) {
         Ok(t) => {
             let tracker = t.with_max_hands(cfg.hands.max_hands.max(1) as usize);
-            let mapper = GestureMapper::new(GestureMapperConfig {
+            let mut mapper = GestureMapper::new(GestureMapperConfig {
                 mirror: cfg.hands.mirror,
                 emit_native: cfg.hands.emit_native,
+                finger_curls: cfg.hands.finger_curls,
             });
+            if cfg.hands.arms {
+                // Arm floats (issue #28) ride on the same side-assigned
+                // hands as the gesture ints.
+                mapper = mapper.with_arms(ArmMapper::new());
+            }
             Some((Box::new(tracker), mapper, cfg.hands.interval.max(1)))
         }
         Err(e) => {

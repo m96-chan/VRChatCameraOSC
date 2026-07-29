@@ -112,6 +112,15 @@ pub struct HandsConfig {
     /// Run the hand stage every N pipeline frames (1 = every frame — the
     /// issue-#8 default decision; raise to shed load if combined FPS drops).
     pub interval: u32,
+    /// Emit the Tier-2 per-finger curl floats (`VCO_L_ThumbCurl` ..
+    /// `VCO_R_LittleCurl` — issue #8 phase 3). Emitting is harmless (VRChat
+    /// ignores undeclared parameters); the `unity/` wizard controls whether
+    /// the avatar declares them.
+    pub finger_curls: bool,
+    /// Emit the arm-raise floats (`VCO_{L,R}_ArmUpDown`, wrist height →
+    /// -1..1 — issue #28 phase 1). Decays to exactly 0 when the hand is
+    /// untracked so the avatar's idle animation resumes.
+    pub arms: bool,
 }
 
 impl Default for HandsConfig {
@@ -122,6 +131,8 @@ impl Default for HandsConfig {
             max_hands: 2,
             emit_native: true,
             interval: 1,
+            finger_curls: true,
+            arms: true,
         }
     }
 }

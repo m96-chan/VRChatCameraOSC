@@ -483,6 +483,388 @@ namespace VRChatCameraOsc.AvatarSetup
             return mask;
         }
 
+        /// <summary>Pseudo-parameter keys for the per-hand finger-curl layers
+        /// (issue #8 phase 3), mirroring <see cref="CombinedHeadKey"/>: they
+        /// derive the layer/asset name (<c>OSC_VCO_L_FingerCurls</c>); the
+        /// real Animator parameters are the five <c>VCO_*Curl</c> floats of
+        /// that hand (<see cref="CurlParams"/>).</summary>
+        public const string FingerCurlLeftKey = "VCO_L_FingerCurls";
+        public const string FingerCurlRightKey = "VCO_R_FingerCurls";
+
+        /// <summary>Animator/expression parameter names for the arm-raise
+        /// layers (issue #28): Float -1..1, +1 = straight up, -1 = hanging.
+        /// The tracker sends exactly 0.0 while the hand is untracked — the
+        /// layer's deadband rests in an empty Neutral state there.</summary>
+        public const string ArmLeftParam = "VCO_L_ArmUpDown";
+        public const string ArmRightParam = "VCO_R_ArmUpDown";
+
+        /// <summary>The five per-finger curl parameter names of one hand, in
+        /// tree-nesting order (Thumb outermost — matches <see cref="Fingers"/>).
+        /// 0 = straight, 1 = fully curled.</summary>
+        public static string[] CurlParams(bool leftHand)
+        {
+            var side = leftHand ? "L" : "R";
+            return Fingers.Select(f => $"VCO_{side}_{f}Curl").ToArray();
+        }
+
+        /// <summary>
+        /// ONE Gesture-controller layer per hand (issue #8 phase 3,
+        /// <c>OSC_VCO_L_FingerCurls</c> / <c>OSC_VCO_R_FingerCurls</c>)
+        /// driving all 15 of that hand's "Stretched" joint muscles from the
+        /// five <c>VCO_*Curl</c> floats through a nested Simple1D blend tree:
+        /// depth 5 (Thumb → Index → Middle → Ring → Little), two children per
+        /// level at thresholds 0 (straight) and 1 (curled), so 2^5 = 32 leaf
+        /// clips. Every leaf writes ALL 20 finger muscles — the 15 stretch
+        /// joints at +1 (straight) / -1 (curled) per that leaf's finger
+        /// combination, plus the 5 Spread muscles pinned at 0 (neutral).
+        /// Writing the spreads too is deliberate (issue #27 group lesson,
+        /// same as the gesture pose clips): the whole-Fingers-group override
+        /// must always carry every muscle of the group, never leave one at a
+        /// stale default. A half-curled param blends linearly between the 0
+        /// and 1 slots of its level, so each finger moves smoothly and
+        /// independently.
+        ///
+        /// MUTUALLY EXCLUSIVE with <see cref="AddHandGestureLayer"/>: both
+        /// write the same per-hand Fingers muscle group, and two Override
+        /// layers masking one group fight (last-one-wins for the whole
+        /// group, issue #27) — the wizard's hand mode
+        /// (<see cref="ApplyHandMode"/>) applies one and removes the other.
+        /// Like the gesture layers: Override blending, per-hand fingers-only
+        /// mask, no VRCAnimatorTrackingControl (fingers aren't IK-held on
+        /// Desktop).
+        /// </summary>
+        public static void AddFingerCurlLayer(AnimatorController controller, bool leftHand)
+        {
+            var key = leftHand ? FingerCurlLeftKey : FingerCurlRightKey;
+
+            // Full sub-asset cleanup before rebuilding (idempotent re-Apply).
+            RemoveLayer(controller, key);
+
+            var curlParams = CurlParams(leftHand);
+            foreach (var p in curlParams)
+            {
+                EnsureFloatParameter(controller, p);
+            }
+
+            var layerName = LayerNameFor(key);
+            var root = (BlendTree)BuildCurlTree(controller, layerName, leftHand, curlParams, 0, new bool[Fingers.Length]);
+            AddLayer(controller, key, root, AnimatorLayerBlendingMode.Override,
+                GetOrCreateFingersOnlyMask(controller, leftHand));
+        }
+
+        /// <summary>Recursive nested-Simple1D construction for
+        /// <see cref="AddFingerCurlLayer"/>: at <paramref name="depth"/> ==
+        /// <c>Fingers.Length</c> the branch bottoms out in a leaf clip for
+        /// the accumulated straight/curled combination.</summary>
+        static Motion BuildCurlTree(
+            AnimatorController controller,
+            string layerName,
+            bool leftHand,
+            string[] curlParams,
+            int depth,
+            bool[] curled)
+        {
+            if (depth == Fingers.Length)
+            {
+                return CurlPoseClip(controller, layerName, leftHand, curled);
+            }
+
+            var tree = new BlendTree
+            {
+                name = $"{layerName}_{CurlSuffix(curled, depth)}{Fingers[depth]}",
+                blendType = BlendTreeType.Simple1D,
+                blendParameter = curlParams[depth],
+                useAutomaticThresholds = false,
+            };
+            AssetDatabase.AddObjectToAsset(tree, controller);
+            curled[depth] = false;
+            tree.AddChild(BuildCurlTree(controller, layerName, leftHand, curlParams, depth + 1, curled), 0f);
+            curled[depth] = true;
+            tree.AddChild(BuildCurlTree(controller, layerName, leftHand, curlParams, depth + 1, curled), 1f);
+            curled[depth] = false;
+            return tree;
+        }
+
+        /// <summary>Asset-name suffix encoding a straight/curled combination
+        /// prefix, e.g. <c>T1I0</c> = thumb curled, index straight.</summary>
+        static string CurlSuffix(bool[] curled, int depth)
+        {
+            var s = new System.Text.StringBuilder();
+            for (var i = 0; i < depth; i++)
+            {
+                s.Append(Fingers[i][0]).Append(curled[i] ? '1' : '0');
+            }
+            return s.ToString();
+        }
+
+        /// <summary>One curl leaf clip writing ALL 20 of that hand's finger
+        /// muscles as flat 1-second curves: stretch joints -1 when that
+        /// finger's slot is curled / +1 when straight, spreads 0.</summary>
+        static AnimationClip CurlPoseClip(
+            AnimatorController controller,
+            string layerName,
+            bool leftHand,
+            bool[] curled)
+        {
+            var clip = new AnimationClip { name = $"{layerName}_{CurlSuffix(curled, curled.Length)}" };
+            var hand = leftHand ? "LeftHand" : "RightHand";
+            for (var f = 0; f < Fingers.Length; f++)
+            {
+                foreach (var joint in new[] { "1 Stretched", "2 Stretched", "3 Stretched", "Spread" })
+                {
+                    var value = joint == "Spread" ? 0f : (curled[f] ? -1f : 1f);
+                    var binding = EditorCurveBinding.FloatCurve(
+                        string.Empty, typeof(Animator), $"{hand}.{Fingers[f]}.{joint}");
+                    var curve = new AnimationCurve(
+                        new Keyframe(0f, value),
+                        new Keyframe(MuscleClipSeconds, value));
+                    AnimationUtility.SetEditorCurve(clip, binding, curve);
+                }
+            }
+            AssetDatabase.AddObjectToAsset(clip, controller);
+            return clip;
+        }
+
+        /// <summary>
+        /// Applies the wizard's hand mode (issue #8, see
+        /// <see cref="HandMode"/>) to the Gesture controller: adds the
+        /// selected mode's per-hand layers and removes the other mode's —
+        /// gesture poses and per-finger curls both write the same Fingers
+        /// muscle groups, so they must never coexist (issue #27 per-group
+        /// override lesson). <see cref="HandMode.Off"/> removes both.
+        /// </summary>
+        public static void ApplyHandMode(AnimatorController controller, HandMode mode)
+        {
+            if (mode == HandMode.Gestures)
+            {
+                AddHandGestureLayer(controller, leftHand: true);
+                AddHandGestureLayer(controller, leftHand: false);
+            }
+            else
+            {
+                RemoveLayer(controller, GestureLeftParam);
+                RemoveLayer(controller, GestureRightParam);
+            }
+
+            if (mode == HandMode.FingerCurls)
+            {
+                AddFingerCurlLayer(controller, leftHand: true);
+                AddFingerCurlLayer(controller, leftHand: false);
+            }
+            else
+            {
+                RemoveLayer(controller, FingerCurlLeftKey);
+                RemoveLayer(controller, FingerCurlRightKey);
+            }
+        }
+
+        /// <summary>Deadband around the tracker's exactly-0.0
+        /// hand-untracked value: outside it the arm layer's Active state
+        /// takes the arm, inside it the empty Neutral state hands the arm
+        /// back to idle/locomotion.</summary>
+        const float ArmDeadband = 0.02f;
+
+        /// <summary>Seconds of cross-fade for the arm layer's Neutral ⇄
+        /// Active transitions — long enough that gaining/losing hand
+        /// tracking raises/lowers the arm smoothly instead of snapping.</summary>
+        const float ArmTransitionSeconds = 0.25f;
+
+        /// <summary>
+        /// Per-arm muscle anchor poses for <see cref="AddArmLayer"/>:
+        /// muscle values at parameter -1 (hanging), 0 (mid,
+        /// forward-horizontal) and +1 (straight up). PROVISIONAL — tuned on
+        /// paper, to be verified live (issue #28 expects a sign-flip round
+        /// like the head yaw needed). Notes:
+        /// - Muscle sign convention observed on the verified head muscles:
+        ///   the name's SECOND word is +1 ("Down-Up" +1 = up, "Left-Right"
+        ///   +1 = right) — so "Front-Back" +1 = back, and reaching forward
+        ///   is NEGATIVE Front-Back. That's the least-certain guess here.
+        /// - "Forearm Stretch" +1 = straight, -1 = fully bent (same
+        ///   convention as the finger "Stretched" muscles).
+        /// - Hanging uses Arm Down-Up -0.5 (not -1) plus a slightly bent
+        ///   forearm — a relaxed hang, not a rigid pole.
+        /// - Every anchor writes ALL nine arm-group muscles (issue #27
+        ///   group lesson): wrist/twists ride at 0 rather than being left
+        ///   unwritten.
+        /// </summary>
+        static readonly (string muscle, float hanging, float mid, float up)[] ArmPoseTable =
+        {
+            //  muscle                 -1 hang   0 mid   +1 up
+            ("Shoulder Down-Up",       -0.1f,    0f,     0.4f),
+            ("Shoulder Front-Back",     0f,     -0.3f,   0f),
+            ("Arm Down-Up",            -0.5f,    0.3f,   1f),
+            ("Arm Front-Back",          0f,     -0.7f,   0f),
+            ("Arm Twist In-Out",        0f,      0f,     0f),
+            ("Forearm Stretch",         0.7f,    0.9f,   1f),
+            ("Forearm Twist In-Out",    0f,      0f,     0f),
+            ("Hand Down-Up",            0f,      0f,     0f),
+            ("Hand In-Out",             0f,      0f,     0f),
+        };
+
+        /// <summary>The animatable muscle-curve property names for one arm's
+        /// muscle group, 9 total. Unlike the fingers (whose binding names
+        /// diverge from <see cref="HumanTrait.MuscleName"/> — the
+        /// "LeftHand.Thumb.1 Stretched" quirk), the arm names bind exactly
+        /// as HumanTrait lists them ("Left Arm Down-Up" style, like the head
+        /// muscles) — verified empirically via clip.humanMotion in
+        /// MuscleNameValidityTests.</summary>
+        internal static IEnumerable<string> ArmMuscleProperties(bool leftArm)
+        {
+            var side = leftArm ? "Left" : "Right";
+            return ArmPoseTable.Select(e => $"{side} {e.muscle}");
+        }
+
+        /// <summary>
+        /// ONE Gesture-controller layer per arm (issue #28 phase 1,
+        /// <c>OSC_VCO_L_ArmUpDown</c> / <c>OSC_VCO_R_ArmUpDown</c>) raising
+        /// and lowering that arm from the tracker's <c>VCO_*_ArmUpDown</c>
+        /// float (-1 hanging .. +1 straight up):
+        ///
+        /// - The default <b>Neutral</b> state is EMPTY (no motion): while
+        ///   the parameter sits inside the ±<see cref="ArmDeadband"/>
+        ///   deadband — tracker off, or hand untracked (the tracker sends
+        ///   exactly 0.0 then) — the layer writes nothing, so the avatar's
+        ///   own idle/locomotion arm animation passes through untouched.
+        /// - The <b>Active</b> state is a Simple1D tree on the parameter
+        ///   with anchors at -1 / 0 / +1 (<see cref="ArmPoseTable"/>), every
+        ///   anchor clip writing ALL nine arm muscles as flat 1-second
+        ///   curves (issue #27 group lesson + real-length convention).
+        /// - Neutral→Active on Greater +deadband OR Less -deadband (two
+        ///   transitions); Active→Neutral when back inside the deadband
+        ///   (ONE transition with both conditions AND-ed). 0.25 s fixed
+        ///   duration both ways for a smooth raise/lower.
+        /// - Masked to that arm's body part only
+        ///   (AvatarMaskBodyPart.Left/RightArm) — composes with the
+        ///   fingers-masked hand layers, they touch disjoint groups.
+        /// - Deliberately NO VRCAnimatorTrackingControl: Desktop arms are
+        ///   animation-driven (the avatar's own idle animation moving them
+        ///   proves it), unlike the IK-held head. If live testing ever shows
+        ///   IK stealing the arms after all, the fallback is the head-saga
+        ///   recipe: TrackingControl (Left/RightHand = Animation) on
+        ///   ping-pong exit-time states (see AddCombinedHeadLayer).
+        /// </summary>
+        public static void AddArmLayer(AnimatorController controller, bool leftArm)
+        {
+            var paramName = leftArm ? ArmLeftParam : ArmRightParam;
+
+            // Full sub-asset cleanup before rebuilding (idempotent re-Apply).
+            RemoveLayer(controller, paramName);
+            EnsureFloatParameter(controller, paramName);
+
+            var layerName = LayerNameFor(paramName);
+            var stateMachine = new AnimatorStateMachine { name = layerName, hideFlags = HideFlags.HideInHierarchy };
+            AssetDatabase.AddObjectToAsset(stateMachine, controller);
+
+            var neutral = stateMachine.AddState("Neutral");
+            neutral.motion = null;
+            neutral.writeDefaultValues = false;
+            stateMachine.defaultState = neutral;
+
+            var tree = new BlendTree
+            {
+                name = layerName,
+                blendType = BlendTreeType.Simple1D,
+                blendParameter = paramName,
+                useAutomaticThresholds = false,
+            };
+            AssetDatabase.AddObjectToAsset(tree, controller);
+            foreach (var anchor in new[] { -1f, 0f, 1f })
+            {
+                tree.AddChild(ArmPoseClip(controller, layerName, leftArm, anchor), anchor);
+            }
+
+            var active = stateMachine.AddState("Active");
+            active.motion = tree;
+            active.writeDefaultValues = false;
+
+            // Raise: leave Neutral as soon as the parameter escapes the
+            // deadband in either direction (a condition can't express OR, so
+            // two transitions).
+            ConfigureArmTransition(neutral.AddTransition(active))
+                .AddCondition(AnimatorConditionMode.Greater, ArmDeadband, paramName);
+            ConfigureArmTransition(neutral.AddTransition(active))
+                .AddCondition(AnimatorConditionMode.Less, -ArmDeadband, paramName);
+            // Lower: back to Neutral only when INSIDE the deadband — both
+            // conditions on one transition AND together.
+            var release = ConfigureArmTransition(active.AddTransition(neutral));
+            release.AddCondition(AnimatorConditionMode.Less, ArmDeadband, paramName);
+            release.AddCondition(AnimatorConditionMode.Greater, -ArmDeadband, paramName);
+
+            var layers = controller.layers.ToList();
+            var existingIndex = layers.FindIndex(l => l.name == layerName);
+            if (existingIndex >= 0)
+            {
+                layers.RemoveAt(existingIndex);
+            }
+            layers.Add(new AnimatorControllerLayer
+            {
+                name = layerName,
+                stateMachine = stateMachine,
+                defaultWeight = 1f,
+                blendingMode = AnimatorLayerBlendingMode.Override,
+                avatarMask = GetOrCreateArmOnlyMask(controller, leftArm),
+            });
+            controller.layers = layers.ToArray();
+        }
+
+        static AnimatorStateTransition ConfigureArmTransition(AnimatorStateTransition transition)
+        {
+            transition.hasExitTime = false;
+            transition.hasFixedDuration = true;
+            transition.duration = ArmTransitionSeconds;
+            return transition;
+        }
+
+        /// <summary>One arm anchor clip writing ALL nine of that arm's
+        /// muscles as flat 1-second curves (<see cref="ArmPoseTable"/>).</summary>
+        static AnimationClip ArmPoseClip(
+            AnimatorController controller,
+            string layerName,
+            bool leftArm,
+            float anchor)
+        {
+            var clip = new AnimationClip { name = $"{layerName}_{anchor:0.#}" };
+            var side = leftArm ? "Left" : "Right";
+            foreach (var (muscle, hanging, mid, up) in ArmPoseTable)
+            {
+                var value = anchor < 0f ? hanging : (anchor > 0f ? up : mid);
+                var binding = EditorCurveBinding.FloatCurve(
+                    string.Empty, typeof(Animator), $"{side} {muscle}");
+                var curve = new AnimationCurve(
+                    new Keyframe(0f, value),
+                    new Keyframe(MuscleClipSeconds, value));
+                AnimationUtility.SetEditorCurve(clip, binding, curve);
+            }
+            AssetDatabase.AddObjectToAsset(clip, controller);
+            return clip;
+        }
+
+        /// <summary>Per-arm mask (mirrors
+        /// <see cref="GetOrCreateFingersOnlyMask"/>): contains the layer's
+        /// written effect to that arm's body part so Humanoid retargeting
+        /// can't perturb the torso — the same PhysBone-runaway class of bug
+        /// the head-only mask exists for.</summary>
+        static AvatarMask GetOrCreateArmOnlyMask(AnimatorController controller, bool leftArm)
+        {
+            var maskName = leftArm ? "OSC_LeftArmMask" : "OSC_RightArmMask";
+            var allowed = leftArm ? AvatarMaskBodyPart.LeftArm : AvatarMaskBodyPart.RightArm;
+            var existing = AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(controller))
+                .OfType<AvatarMask>()
+                .FirstOrDefault(m => m.name == maskName);
+            if (existing != null)
+            {
+                return existing;
+            }
+
+            var mask = new AvatarMask { name = maskName };
+            for (var part = AvatarMaskBodyPart.Root; part < AvatarMaskBodyPart.LastBodyPart; part++)
+            {
+                mask.SetHumanoidBodyPartActive(part, part == allowed);
+            }
+            AssetDatabase.AddObjectToAsset(mask, controller);
+            return mask;
+        }
+
         /// <summary>Whether an <c>OSC_&lt;paramName&gt;</c> layer currently exists — the
         /// "ON" state the wizard's toggle button reads to decide Apply vs. Remove.</summary>
         public static bool HasLayer(AnimatorController controller, string paramName)
@@ -575,11 +957,16 @@ namespace VRChatCameraOsc.AvatarSetup
                 Object.DestroyImmediate(layer.avatarMask, true);
             }
 
-            // The combined head layer is keyed by a pseudo-param; its real
-            // Animator parameters are the three head axes.
+            // The combined head layer and the per-hand finger-curl layers are
+            // keyed by pseudo-params; their real Animator parameters are the
+            // three head axes / that hand's five curl floats.
             var toDrop = paramName == CombinedHeadKey
                 ? HeadAxes.Select(a => a.param).ToArray()
-                : new[] { paramName };
+                : paramName == FingerCurlLeftKey
+                    ? CurlParams(leftHand: true)
+                    : paramName == FingerCurlRightKey
+                        ? CurlParams(leftHand: false)
+                        : new[] { paramName };
             controller.parameters = controller.parameters.Where(p => !toDrop.Contains(p.name)).ToArray();
             return true;
         }

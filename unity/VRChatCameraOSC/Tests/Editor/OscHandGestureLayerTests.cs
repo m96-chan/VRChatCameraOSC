@@ -35,7 +35,7 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         }
 
         [Test]
-        public void Spec_DeclaresBothGestureInts_AsAlwaysDeclaredCore()
+        public void Spec_DeclaresBothGestureInts_ModeGatedNotCore()
         {
             foreach (var name in new[] { "VCO_GestureLeft", "VCO_GestureRight" })
             {
@@ -44,8 +44,13 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
                 Assert.AreEqual(0f, spec.Min, name);
                 Assert.AreEqual(7f, spec.Max, name);
                 Assert.AreEqual(0f, spec.DefaultValue, name);
-                Assert.IsFalse(spec.Optional, $"{name} must be core (always declared)");
-                Assert.IsTrue(OscParameterSpec.Core.Any(s => s.Name == name), $"{name} missing from Core");
+                // Since the 3-way hand mode (issue #8 phase 3) the gesture
+                // ints follow the mode instead of being always-core: they're
+                // only declared in Gestures mode (see
+                // AvatarSetupWindow.SpecsToDeclare), never alongside curls.
+                Assert.IsTrue(OscParameterSpec.IsModeGated(spec.Kind), $"{name} must be mode-gated");
+                Assert.IsFalse(OscParameterSpec.Core.Any(s => s.Name == name),
+                    $"{name} must not be in the always-declared Core set");
             }
         }
 
