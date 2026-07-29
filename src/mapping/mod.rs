@@ -18,8 +18,8 @@
 //! - [`gesture`] — 21 hand landmarks → VRChat gesture ints
 //!   (`VCO_GestureLeft/Right` + optional native addresses, issue #8) and
 //!   Tier-2 per-finger curl floats (`VCO_*Curl`, issue #8 phase 3).
-//! - [`arm`] — wrist height → `VCO_{L,R}_ArmUpDown` arm-raise floats
-//!   (issue #28 phase 1).
+//! - [`arm`] — BlazePose landmarks → the full-arm parameter set
+//!   (`VCO_{L,R}_ArmTracked/ArmUpDown/ArmAcross/Elbow`, issue #28 phase 2).
 
 pub mod arkit;
 pub mod arm;

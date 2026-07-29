@@ -323,6 +323,41 @@ fn hands_section_round_trips() {
     assert_eq!(loaded.hands, cfg.hands);
 }
 
+// Pose tracking (issue #28 phase 2): [pose] enabled / redetect_interval.
+// The arm parameters are routed from the pose stack; the legacy [hands]
+// arms key stays tolerated (loads without error) but has no effect.
+#[test]
+fn pose_defaults_and_legacy_files_without_the_section() {
+    let d = Config::default().pose;
+    assert!(d.enabled, "pose (arm tracking) defaults on");
+    assert_eq!(d.redetect_interval, 30, "~1/s safety net at 30 FPS");
+
+    // A config file written before [pose] existed still loads (defaults).
+    let cfg: Config = toml::from_str("[osc]\nport = 9000\n").unwrap();
+    assert_eq!(cfg.pose, Config::default().pose);
+    // Partial [pose] section: absent keys fall back per-field.
+    let cfg: Config = toml::from_str("[pose]\nenabled = false\n").unwrap();
+    assert!(!cfg.pose.enabled);
+    assert_eq!(cfg.pose.redetect_interval, 30, "unset keys keep defaults");
+    // The deprecated [hands] arms key still parses (tolerated, unused).
+    let cfg: Config = toml::from_str("[hands]\narms = false\n").unwrap();
+    assert!(!cfg.hands.arms);
+    assert!(cfg.pose.enabled, "hands.arms no longer gates arm output");
+}
+
+#[test]
+fn pose_section_round_trips() {
+    let mut cfg = Config::default();
+    cfg.pose.enabled = false;
+    cfg.pose.redetect_interval = 10;
+
+    let dir = TempDir::new("pose-roundtrip");
+    let path = dir.join("config.toml");
+    cfg.save(&path).unwrap();
+    let loaded = Config::load(&path).unwrap();
+    assert_eq!(loaded.pose, cfg.pose);
+}
+
 #[test]
 fn avatar_config_dir_defaults_to_none_and_round_trips() {
     assert_eq!(Config::default().mapping.avatar_config_dir, None);

@@ -26,12 +26,11 @@
 //! Since issue #8 phase 3 the mapper also emits the **Tier-2 per-finger curl
 //! floats** (`VCO_L_ThumbCurl` .. `VCO_R_LittleCurl`, "Little" matching the
 //! Unity muscle naming) — the same [`finger_curls`] scalars the classifier
-//! consumes, One-Euro smoothed per channel — and can host an
-//! [`ArmMapper`](super::arm::ArmMapper) (issue #28) so the arm floats reuse
-//! the exact same left/right hand assignment as the gesture ints.
+//! consumes, One-Euro smoothed per channel. (The arm floats formerly hosted
+//! here rode the wrist height; since issue #28 phase 2 they come from the
+//! pose stack instead — see `mapping::arm`.)
 
 use crate::mapping::arkit::OneEuro;
-use crate::mapping::arm::ArmMapper;
 use crate::osc::OscParam;
 use crate::tracking::hands::{
     HandFrame, Handedness, INDEX_DIP, INDEX_MCP, INDEX_PIP, INDEX_TIP, MIDDLE_DIP, MIDDLE_MCP,
@@ -412,10 +411,6 @@ pub struct GestureMapper {
     config: GestureMapperConfig,
     left: SideState,
     right: SideState,
-    /// Optional arm mapper (issue #28): fed the same side-assigned hands so
-    /// `VCO_*_ArmUpDown` and the gesture ints can never disagree about which
-    /// hand is "left".
-    arms: Option<ArmMapper>,
 }
 
 impl GestureMapper {
@@ -424,15 +419,7 @@ impl GestureMapper {
             config,
             left: SideState::default(),
             right: SideState::default(),
-            arms: None,
         }
-    }
-
-    /// Attach the arm mapper (issue #28): its `VCO_{L,R}_ArmUpDown` floats
-    /// are appended to every [`map`](Self::map) result.
-    pub fn with_arms(mut self, arms: ArmMapper) -> Self {
-        self.arms = Some(arms);
-        self
     }
 
     /// The gestures currently emitted for (left, right) — for the TUI.
@@ -481,9 +468,6 @@ impl GestureMapper {
                     params.push(OscParam::float(format!("VCO_{side}_{stem}Curl"), *v));
                 }
             }
-        }
-        if let Some(arms) = self.arms.as_mut() {
-            params.extend(arms.map(left, right));
         }
         params
     }
@@ -1019,28 +1003,6 @@ mod tests {
             last = float_value(&mapper.map(&[]), "VCO_L_IndexCurl");
         }
         assert!(last < 0.05, "curl still {last} after 30 empty frames");
-    }
-
-    /// `with_arms`: the arm floats ride along, on the same side assignment
-    /// (the model-Right hand raised to head height drives the LEFT arm).
-    #[test]
-    fn with_arms_appends_arm_floats_on_the_same_sides() {
-        use crate::mapping::arm::{ArmMapper, HEAD_TOP_Y};
-        let mut mapper =
-            GestureMapper::new(GestureMapperConfig::default()).with_arms(ArmMapper::new());
-        let mut raised = frame([true; 5], Handedness::Left);
-        raised.points[WRIST][1] = HEAD_TOP_Y;
-        let params = settle(&mut mapper, std::slice::from_ref(&raised));
-        assert!(
-            float_value(&params, "VCO_L_ArmUpDown") > 0.9,
-            "user's left arm raised"
-        );
-        assert_eq!(float_value(&params, "VCO_R_ArmUpDown"), 0.0);
-
-        // Without with_arms the params are absent.
-        let mut plain = GestureMapper::new(GestureMapperConfig::default());
-        let params = plain.map(&[]);
-        assert!(!params.iter().any(|p| p.name.ends_with("ArmUpDown")));
     }
 
     /// `mirror = true` (default, raw webcam): the model labels an unmirrored

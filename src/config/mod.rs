@@ -37,6 +37,7 @@ pub struct Config {
     pub mapping: MappingConfig,
     pub eye: EyeConfig,
     pub hands: HandsConfig,
+    pub pose: PoseConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -117,9 +118,11 @@ pub struct HandsConfig {
     /// ignores undeclared parameters); the `unity/` wizard controls whether
     /// the avatar declares them.
     pub finger_curls: bool,
-    /// Emit the arm-raise floats (`VCO_{L,R}_ArmUpDown`, wrist height →
-    /// -1..1 — issue #28 phase 1). Decays to exactly 0 when the hand is
-    /// untracked so the avatar's idle animation resumes.
+    /// **Deprecated** (issue #28 phase 2): the arm floats no longer ride the
+    /// hand stack — they come from the pose stack, controlled by `[pose]
+    /// enabled`. This key is tolerated so pre-phase-2 config files still
+    /// load, but it has no effect (precedence: `[pose] enabled` alone
+    /// decides whether arm parameters are emitted).
     pub arms: bool,
 }
 
@@ -133,6 +136,32 @@ impl Default for HandsConfig {
             interval: 1,
             finger_curls: true,
             arms: true,
+        }
+    }
+}
+
+/// Full-arm tracking → the `VCO_*_Arm*`/`VCO_*_Elbow` parameters (issue #28
+/// phase 2): the MediaPipe person-detection + BlazePose stack feeding
+/// `mapping::arm`. The pose landmark net runs every frame alongside face and
+/// hands; person detection is a rare async safety net. Left/right honors the
+/// shared `[hands] mirror` flag (one camera, one mirroring convention).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct PoseConfig {
+    /// Run the pose tracker (models auto-download like the face stack).
+    /// CLI override: `--pose on|off`. This is the sole switch for the arm
+    /// parameters — the legacy `[hands] arms` key is ignored.
+    pub enabled: bool,
+    /// Safety-net person-redetect cadence in pipeline frames (~1/s at 30
+    /// FPS by default; clamped to >= 1 at build).
+    pub redetect_interval: u32,
+}
+
+impl Default for PoseConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            redetect_interval: crate::tracking::pose::DEFAULT_REDETECT_INTERVAL,
         }
     }
 }

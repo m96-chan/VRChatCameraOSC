@@ -37,6 +37,11 @@ Realtime face tracking for VRChat, driven from your webcam and delivered over OS
 - **Native eye tracking** (default ON) — gaze + blink over VRChat's own
   `/tracking/eye/*` OSC endpoints, which drive the avatar's **existing eye
   bones directly** — works on any avatar, no parameters, no wizard (issue #19).
+- **Full-arm tracking** (default ON) — MediaPipe Pose (BlazePose) shoulder /
+  elbow / wrist landmarks → per-arm shoulder-direction + elbow-bend
+  parameters (`VCO_{L,R}_ArmTracked/ArmUpDown/ArmAcross/Elbow`), bound by
+  the `unity/` wizard (issue #28 phase 2). Arms decay to exactly 0 when
+  untracked so VRChat's idle animation resumes.
 - **TUI** — monitor and control everything from the terminal.
 
 ## Tech
@@ -68,6 +73,7 @@ swappable:
 | Capture | `capture::CameraSource` | `capture::native::NativeCamera` — AVFoundation on macOS, V4L2 on Linux, MediaFoundation on Windows (build-verified in CI; runtime verification on real Windows hardware pending), via `nokhwa`; synthetic `FakeCamera` for tests/headless |
 | Tracking | `tracking::arkit::ArkitFaceTracker` | `mediapipe::MediapipeTracker` — **YuNet** detector → rotated eyes-aligned ROI → **FaceMesh V2** (478 3-D landmarks, on **burn-wgpu** GPU with candle-onnx CPU fallback) → **Blendshape V2** (52 ARKit coefficients) + per-axis head rotation. Behind a trait so a different expression model can slot in ("models are pluggable") |
 | Mapping | `mapping::unified::UnifiedMapper` | 52 ARKit coefficients → Unified Expressions shapes (VRCFT LiveLink correlation) → the VRCFT `v2/` parameter set + `*TrackingActive` bools, with per-channel neutral-baseline calibration (per-eye blink self-calibration) and One-Euro smoothing (`mapping::arkit` shared machinery) |
+| Pose (arms) | `tracking::pose::BlazePoseTracker` → `mapping::arm::ArmMapper` | **person detection** (OpenCV Zoo `person_detection_mediapipe`, candle CPU, rare async safety net ~1/s) → rotated ROI from aux landmarks 33/34 between detects → **BlazePose** (39 landmarks + visibility, burn-wgpu with CPU fallback, every frame) → `VCO_{L,R}_ArmTracked/ArmUpDown/ArmAcross/Elbow` (direction cosines of the upper arm + interior-elbow-angle bend, One-Euro smoothed, decay-to-exact-0 on loss); `[pose]` / `--pose` (issue #28 phase 2) |
 | Avatar gating | `mapping::avatar` + `osc::AvatarChangeListener` | reads VRChat's per-avatar OSC config JSON and follows `/avatar/change` (nonblocking listen on `[osc] listen_port`, default 9001) → send only declared params at exact addresses, in declared float/bool/binary forms (issue #18 phases 2–3) |
 | OSCQuery | `osc::oscquery` | mDNS (`mdns-sd`) advertisement of our OSC input (`_osc._udp` + `_oscjson._tcp` with a minimal HTTP `?HOST_INFO`/root-node responder) so VRChat auto-discovers us, plus discovery of `VRChat-Client-*` and HTTP fetch of the avatar's declared parameters — local-file → OSCQuery → blind-prefix priority (issue #18 phase 3b) |
 | Eye (native) | `mapping::eye::NativeEyeMapper` | 12 eye channels → `/tracking/eye/LeftRightPitchYaw` (degrees) + `EyesClosedAmount`, appended to the parameter output; `[eye]` / `--native-eye` (issue #19) |
@@ -92,8 +98,11 @@ cargo run --release -- --monitor --fake --frames 20
 ```
 
 The tracker loads `models/face_detection.onnx` (YuNet),
-`models/face_landmarks.onnx` (FaceMesh V2), and `models/face_blendshapes.onnx`
-(Blendshape V2). **All auto-download on first run** (from this
+`models/face_landmarks.onnx` (FaceMesh V2), `models/face_blendshapes.onnx`
+(Blendshape V2), `models/palm_detection.onnx` + `models/hand_landmarks.onnx`
+(MediaPipe Hands), and `models/person_detection.onnx` +
+`models/pose_estimation.onnx` (MediaPipe Pose, issue #28).
+**All auto-download on first run** (from this
 repo's [`models-v1` release](https://github.com/m96-chan/VRChatCameraOSC/releases/tag/models-v1))
 if missing — no Python/PyTorch needed. Offline, or if the download fails, the
 loop still runs with tracking disabled and prints a clear message.
@@ -101,9 +110,11 @@ loop still runs with tracking disabled and prints a clear message.
 CLI flags: `--monitor` (headless), `--fake` (synthetic camera), `--frames N`
 (stop after N frames), `--native-eye on|off` (overrides `[eye]
 native`; see Avatar setup below), `--oscquery on|off` (overrides `[osc]
-oscquery`; see Avatar setup below), `--detect-interval N`
-(see Performance below), `--calibrate-frames N` (see Calibration below; `0`
-skips calibration).
+oscquery`; see Avatar setup below), `--hands on|off` (overrides `[hands]
+enabled`), `--pose on|off` (overrides `[pose] enabled` — the full-arm
+parameters, issue #28; the legacy `[hands] arms` key is tolerated but
+ignored), `--detect-interval N` (see Performance below),
+`--calibrate-frames N` (see Calibration below; `0` skips calibration).
 
 VRChat must have **OSC enabled** (Action Menu → Options → OSC → Enabled) for the
 end-to-end avatar path.
@@ -280,6 +291,8 @@ OSC host/port, camera device, and tracking settings will be configurable from th
 - [x] Camera capture pipeline
 - [x] MediaPipe tracking stack (YuNet → FaceMesh V2 → Blendshape V2, ARKit-52) — AvataCam-parity expression quality
 - [ ] Hand / finger landmark extraction
+- [x] Full-arm tracking — MediaPipe person detection + BlazePose →
+  `VCO_*_ArmTracked/ArmUpDown/ArmAcross/Elbow` (issue #28 phase 2)
 - [x] ARKit blendshapes → OSC mapping (per-eye blink self-calibration, One-Euro smoothing)
 - [x] VRCFaceTracking-compatible output — Unified Expressions `v2/` float params (issue #18 phase 1)
 - [x] VRCFT binary parameter encoding + avatar-config param gating with `/avatar/change` tracking (issue #18 phases 2–3)

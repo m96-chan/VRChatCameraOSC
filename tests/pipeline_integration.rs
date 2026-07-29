@@ -328,44 +328,121 @@ mod hands {
         assert!(names.contains(&"VCO_GestureLeft"));
         assert!(names.contains(&"VCO_GestureRight"));
     }
+}
 
-    /// Arm floats (issue #28): a GestureMapper with an attached ArmMapper
-    /// sends VCO_{L,R}_ArmUpDown through the pipeline; a raised wrist reads
-    /// positive on the mirrored (user-left) side.
+// Pose tracking → arm parameters (issue #28 phase 2): a stub PoseTracker
+// drives the real ArmMapper through Pipeline::with_pose.
+mod pose {
+    use super::*;
+    use vrchat_camera_osc::mapping::arm::ArmMapper;
+    use vrchat_camera_osc::osc::OscValue;
+    use vrchat_camera_osc::tracking::pose::{
+        PoseFrame, PoseTracker, LEFT_ELBOW, LEFT_SHOULDER, LEFT_WRIST, NUM_POSE_LANDMARKS,
+        RIGHT_SHOULDER,
+    };
+
+    /// A pose tracker that always reports the same pose (or none).
+    struct StubPoseTracker(Option<PoseFrame>);
+    impl PoseTracker for StubPoseTracker {
+        fn track(&mut self, _frame: &Frame) -> anyhow::Result<Option<PoseFrame>> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// A pose with the model-left arm raised straight overhead, all its
+    /// landmarks fully visible.
+    fn overhead_left_arm() -> PoseFrame {
+        let mut points = [[0.5f32, 0.5, 0.0]; NUM_POSE_LANDMARKS];
+        let mut visibility = [0.0f32; NUM_POSE_LANDMARKS];
+        points[LEFT_SHOULDER] = [0.6, 0.3, 0.0];
+        points[LEFT_ELBOW] = [0.6, 0.15, 0.0];
+        points[LEFT_WRIST] = [0.6, 0.0, 0.0];
+        points[RIGHT_SHOULDER] = [0.4, 0.3, 0.0];
+        for i in [LEFT_SHOULDER, LEFT_ELBOW, LEFT_WRIST, RIGHT_SHOULDER] {
+            visibility[i] = 0.99;
+        }
+        PoseFrame {
+            confidence: 0.9,
+            points,
+            visibility,
+        }
+    }
+
+    fn float(params: &[OscParam], name: &str) -> f32 {
+        params
+            .iter()
+            .find(|p| p.name == name)
+            .map(|p| match p.value {
+                OscValue::Float(v) => v,
+                ref other => panic!("{name} not a float: {other:?}"),
+            })
+            .unwrap_or_else(|| panic!("{name} missing"))
+    }
+
+    fn boolean(params: &[OscParam], name: &str) -> bool {
+        params
+            .iter()
+            .find(|p| p.name == name)
+            .map(|p| match p.value {
+                OscValue::Bool(v) => v,
+                ref other => panic!("{name} not a bool: {other:?}"),
+            })
+            .unwrap_or_else(|| panic!("{name} missing"))
+    }
+
+    /// Arm parameters (issue #28 phase 2) flow through the pipeline even
+    /// without a face: a raised model-left arm reads +1 UpDown on the left
+    /// params (mirror default), the other side reports untracked.
     #[test]
     fn arm_params_flow_through_the_pipeline() {
-        use vrchat_camera_osc::mapping::arm::{ArmMapper, HEAD_TOP_Y};
-
         let recorded = Arc::new(Mutex::new(Vec::new()));
         let sink = RecordingSink(recorded.clone());
-        let mut raised = open_hand(Handedness::Left);
-        raised.points[0][1] = HEAD_TOP_Y; // wrist at the head top
         let mut pipeline = Pipeline::new(
             Box::new(FakeCamera::new(320, 240)),
             None,
             mapper(),
             Box::new(sink),
         )
-        .with_hands(
-            Box::new(StubHandTracker(vec![raised])),
-            GestureMapper::new(GestureMapperConfig::default()).with_arms(ArmMapper::new()),
-            1,
+        .with_pose(
+            Box::new(StubPoseTracker(Some(overhead_left_arm()))),
+            ArmMapper::new(true),
         );
 
         let outcome = pipeline.step().unwrap();
-        let float = |name: &str| {
-            outcome
-                .params
-                .iter()
-                .find(|p| p.name == name)
-                .map(|p| match p.value {
-                    OscValue::Float(v) => v,
-                    ref other => panic!("{name} not a float: {other:?}"),
-                })
-                .unwrap_or_else(|| panic!("{name} missing"))
-        };
-        assert!(float("VCO_L_ArmUpDown") > 0.9, "user's left arm raised");
-        assert_eq!(float("VCO_R_ArmUpDown"), 0.0, "right arm idle");
+        assert!(boolean(&outcome.params, "VCO_L_ArmTracked"));
+        assert!(
+            float(&outcome.params, "VCO_L_ArmUpDown") > 0.9,
+            "left arm overhead"
+        );
+        assert_eq!(float(&outcome.params, "VCO_L_Elbow"), 0.0, "arm straight");
+        assert!(!boolean(&outcome.params, "VCO_R_ArmTracked"));
+        assert_eq!(float(&outcome.params, "VCO_R_ArmUpDown"), 0.0);
+        assert!(!recorded.lock().unwrap().is_empty(), "params were sent");
+    }
+
+    /// No pose at all still emits the full 8-parameter set (untracked +
+    /// exact zeros) every frame — the wire stays truthful.
+    #[test]
+    fn absent_pose_still_emits_untracked_arm_params() {
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let sink = RecordingSink(recorded.clone());
+        let mut pipeline = Pipeline::new(
+            Box::new(FakeCamera::new(64, 48)),
+            None,
+            mapper(),
+            Box::new(sink),
+        )
+        .with_pose(Box::new(StubPoseTracker(None)), ArmMapper::new(true));
+
+        let outcome = pipeline.step().unwrap();
+        assert_eq!(outcome.params.len(), 8, "2 bools + 6 floats");
+        for side in ["L", "R"] {
+            assert!(!boolean(&outcome.params, &format!("VCO_{side}_ArmTracked")));
+            assert_eq!(
+                float(&outcome.params, &format!("VCO_{side}_ArmUpDown")),
+                0.0
+            );
+        }
     }
 }
 

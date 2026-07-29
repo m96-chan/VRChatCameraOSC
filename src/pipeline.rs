@@ -12,6 +12,7 @@
 //! monitor mode) is mapper-agnostic.
 
 use crate::capture::CameraSource;
+use crate::mapping::arm::ArmMapper;
 use crate::mapping::avatar::AvatarWatcher;
 use crate::mapping::eye::NativeEyeMapper;
 use crate::mapping::gesture::GestureMapper;
@@ -19,6 +20,7 @@ use crate::mapping::unified::UnifiedMapper;
 use crate::osc::{OscParam, OscSink};
 use crate::tracking::arkit::ArkitFaceTracker;
 use crate::tracking::hands::HandTracker;
+use crate::tracking::pose::PoseTracker;
 use anyhow::Result;
 
 /// What one [`Pipeline::step`] produced — for the TUI/monitor to display.
@@ -44,6 +46,10 @@ pub struct Pipeline {
     /// (issue #8) — runs on the same captured frame, independent of the
     /// face path (gestures still go out when no face is tracked).
     hands: Option<HandsStage>,
+    /// Optional pose tracking → arm parameters appended to the frame's
+    /// params (issue #28 phase 2) — runs every frame on the same captured
+    /// frame, independent of the face and hand paths.
+    pose: Option<PoseStage>,
     sink: Box<dyn OscSink>,
     /// Avatar-aware gating (issue #18 phase 3): polled once per step for
     /// `/avatar/change`; feeds the mapper's `set_avatar_config`.
@@ -57,6 +63,14 @@ struct HandsStage {
     /// Run the hand stage every `interval`-th frame (1 = every frame).
     interval: u32,
     frame_index: u32,
+}
+
+/// The attached pose stage (issue #28 phase 2): tracker + arm mapper. Runs
+/// every frame — the landmark net is the burn-wgpu hot path; the slow
+/// person detector schedules itself asynchronously inside the tracker.
+struct PoseStage {
+    tracker: Box<dyn PoseTracker>,
+    arms: ArmMapper,
 }
 
 impl Pipeline {
@@ -74,6 +88,7 @@ impl Pipeline {
             mapper,
             eye: None,
             hands: None,
+            pose: None,
             sink,
             watcher: None,
         }
@@ -95,6 +110,16 @@ impl Pipeline {
             interval: interval.max(1),
             frame_index: 0,
         });
+        self
+    }
+
+    /// Attach the pose tracking stage (issue #28 phase 2): `tracker` runs on
+    /// the same captured frame **every** step; `arms` turns its landmarks
+    /// into the `VCO_{L,R}_ArmTracked/ArmUpDown/ArmAcross/Elbow` parameters
+    /// appended to the frame's output (all eight are emitted every frame —
+    /// an untracked arm reports `false` + decayed-to-0 floats).
+    pub fn with_pose(mut self, tracker: Box<dyn PoseTracker>, arms: ArmMapper) -> Self {
+        self.pose = Some(PoseStage { tracker, arms });
         self
     }
 
@@ -153,6 +178,13 @@ impl Pipeline {
                 params.extend(hands.gesture.map(&tracked));
             }
             hands.frame_index = hands.frame_index.wrapping_add(1);
+        }
+
+        // Pose runs every frame (issue #28), independent of face/hands —
+        // the arm parameters go out even when no face is tracked.
+        if let Some(pose) = self.pose.as_mut() {
+            let tracked = pose.tracker.track(&frame)?;
+            params.extend(pose.arms.map(tracked.as_ref()));
         }
 
         if !params.is_empty() {

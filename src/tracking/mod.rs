@@ -11,9 +11,14 @@
 //! Hands (issue #8): [`hands::HandsTracker`], implementing
 //! [`hands::HandTracker`] — MediaPipe palm detection → rotated ROI → 21
 //! hand landmarks + handedness, feeding `mapping::gesture`.
+//!
+//! Pose (issue #28 phase 2): [`pose::BlazePoseTracker`], implementing
+//! [`pose::PoseTracker`] — MediaPipe person detection → rotated ROI → 33
+//! BlazePose landmarks + visibility, feeding `mapping::arm`.
 
 pub mod arkit;
 #[cfg(feature = "mesh-gpu")]
 pub mod burn_onnx;
 pub mod hands;
 pub mod mediapipe;
+pub mod pose;

@@ -41,6 +41,20 @@ pub fn default_hand_landmarks_path() -> PathBuf {
     PathBuf::from("models/hand_landmarks.onnx")
 }
 
+/// Default local path for the MediaPipe person-detection ONNX model (issue
+/// #28, OpenCV Zoo `person_detection_mediapipe`). See
+/// [`default_face_detection_path`].
+pub fn default_person_detection_path() -> PathBuf {
+    PathBuf::from("models/person_detection.onnx")
+}
+
+/// Default local path for the MediaPipe pose-estimation (BlazePose) ONNX
+/// model (issue #28, OpenCV Zoo `pose_estimation_mediapipe`). See
+/// [`default_face_detection_path`].
+pub fn default_pose_estimation_path() -> PathBuf {
+    PathBuf::from("models/pose_estimation.onnx")
+}
+
 /// GitHub Release URL for the YuNet face-detection ONNX model, hosted on
 /// this repo's `models-v1` release.
 pub const FACE_DETECTION_MODEL_URL: &str =
@@ -58,6 +72,14 @@ pub const PALM_DETECTION_MODEL_URL: &str =
 /// GitHub Release URL for the MediaPipe hand-landmark ONNX model (issue #8).
 pub const HAND_LANDMARKS_MODEL_URL: &str =
     "https://github.com/m96-chan/VRChatCameraOSC/releases/download/models-v1/hand_landmarks.onnx";
+/// GitHub Release URL for the MediaPipe person-detection ONNX model (issue
+/// #28; hosted on the same `models-v1` release).
+pub const PERSON_DETECTION_MODEL_URL: &str =
+    "https://github.com/m96-chan/VRChatCameraOSC/releases/download/models-v1/person_detection.onnx";
+/// GitHub Release URL for the MediaPipe pose-estimation ONNX model (issue
+/// #28).
+pub const POSE_ESTIMATION_MODEL_URL: &str =
+    "https://github.com/m96-chan/VRChatCameraOSC/releases/download/models-v1/pose_estimation.onnx";
 
 /// Download `url` to `path` if `path` doesn't already exist.
 ///

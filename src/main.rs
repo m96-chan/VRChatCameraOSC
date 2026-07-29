@@ -41,6 +41,7 @@ use vrchat_camera_osc::pipeline::Pipeline;
 use vrchat_camera_osc::tracking::arkit::ArkitFaceTracker;
 use vrchat_camera_osc::tracking::hands::{HandTracker, HandsTracker};
 use vrchat_camera_osc::tracking::mediapipe::MediapipeTracker;
+use vrchat_camera_osc::tracking::pose::{BlazePoseTracker, PoseTracker};
 use vrchat_camera_osc::tui::{render, UiState};
 
 /// Default neutral-pose calibration window (issue #15): captured once at
@@ -61,6 +62,8 @@ struct Args {
     oscquery: Option<bool>,
     /// CLI override for `hands.enabled` (`--hands on|off`, issue #8).
     hands: Option<bool>,
+    /// CLI override for `pose.enabled` (`--pose on|off`, issue #28).
+    pose: Option<bool>,
 }
 
 fn parse_args() -> Args {
@@ -73,6 +76,7 @@ fn parse_args() -> Args {
         native_eye: None,
         oscquery: None,
         hands: None,
+        pose: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(arg) = it.next() {
@@ -122,11 +126,18 @@ fn parse_args() -> Args {
                     eprintln!("--hands expects 'on' or 'off' (got {other:?}) — using config")
                 }
             },
+            "--pose" => match it.next().as_deref() {
+                Some("on") => a.pose = Some(true),
+                Some("off") => a.pose = Some(false),
+                other => {
+                    eprintln!("--pose expects 'on' or 'off' (got {other:?}) — using config")
+                }
+            },
             "-h" | "--help" => {
                 println!(
                     "vrchat-camera-osc [--monitor] [--fake] [--frames N] \
                      [--native-eye on|off] [--oscquery on|off] [--hands on|off] \
-                     [--detect-interval N] [--calibrate-frames N]"
+                     [--pose on|off] [--detect-interval N] [--calibrate-frames N]"
                 );
                 std::process::exit(0);
             }
@@ -240,22 +251,47 @@ fn build_hands(cfg: &Config) -> Option<(Box<dyn HandTracker>, GestureMapper, u32
     match HandsTracker::from_paths(&palm, &landmarks) {
         Ok(t) => {
             let tracker = t.with_max_hands(cfg.hands.max_hands.max(1) as usize);
-            let mut mapper = GestureMapper::new(GestureMapperConfig {
+            let mapper = GestureMapper::new(GestureMapperConfig {
                 mirror: cfg.hands.mirror,
                 emit_native: cfg.hands.emit_native,
                 finger_curls: cfg.hands.finger_curls,
             });
-            if cfg.hands.arms {
-                // Arm floats (issue #28) ride on the same side-assigned
-                // hands as the gesture ints.
-                mapper = mapper.with_arms(ArmMapper::new());
-            }
             Some((Box::new(tracker), mapper, cfg.hands.interval.max(1)))
         }
         Err(e) => {
             eprintln!(
                 "failed to load the hand tracking stack: {e:#}\n\
                  The loop still runs; it just won't emit gestures."
+            );
+            None
+        }
+    }
+}
+
+/// Build the pose-tracking stage (issue #28 phase 2): auto-download the two
+/// ONNX models on first run, load the person-detection + BlazePose stack,
+/// and pair it with the arm mapper. Left/right honors the shared `[hands]
+/// mirror` flag (one camera, one mirroring convention). Any load failure
+/// degrades to "no arm tracking" with a clear message (same policy as the
+/// face and hand stacks).
+fn build_pose(cfg: &Config) -> Option<(Box<dyn PoseTracker>, ArmMapper)> {
+    if !cfg.pose.enabled {
+        return None;
+    }
+    let person = models::default_person_detection_path();
+    let landmarks = models::default_pose_estimation_path();
+    ensure_model_present(&person, models::PERSON_DETECTION_MODEL_URL);
+    ensure_model_present(&landmarks, models::POSE_ESTIMATION_MODEL_URL);
+
+    match BlazePoseTracker::from_paths(&person, &landmarks) {
+        Ok(t) => {
+            let tracker = t.with_redetect_interval(cfg.pose.redetect_interval.max(1));
+            Some((Box::new(tracker), ArmMapper::new(cfg.hands.mirror)))
+        }
+        Err(e) => {
+            eprintln!(
+                "failed to load the pose tracking stack: {e:#}\n\
+                 The loop still runs; it just won't emit arm parameters."
             );
             None
         }
@@ -376,6 +412,13 @@ fn main() -> Result<()> {
     }
     if let Some((hand_tracker, gesture_mapper, interval)) = build_hands(&hands_cfg) {
         pipeline = pipeline.with_hands(hand_tracker, gesture_mapper, interval);
+    }
+    let mut pose_cfg = cfg.clone();
+    if let Some(enabled) = args.pose {
+        pose_cfg.pose.enabled = enabled;
+    }
+    if let Some((pose_tracker, arm_mapper)) = build_pose(&pose_cfg) {
+        pipeline = pipeline.with_pose(pose_tracker, arm_mapper);
     }
     if args.native_eye.unwrap_or(cfg.eye.native) {
         pipeline = pipeline.with_native_eye(NativeEyeMapper::new(
