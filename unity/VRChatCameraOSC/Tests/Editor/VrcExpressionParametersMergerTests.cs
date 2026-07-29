@@ -20,11 +20,14 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             CollectionAssert.AreEquivalent(
                 OscParameterSpec.All.Select(s => s.Name).ToArray(),
                 asset.parameters.Select(p => p.name).ToArray());
-            // Everything is Float except the hand-gesture ints (issue #8).
+            // Everything is Float except the hand-gesture ints (issue #8)
+            // and the arm-tracked Bool gates (issue #28 phase 2).
             Assert.IsTrue(asset.parameters.All(p => p.valueType ==
                 (p.name.StartsWith("VCO_Gesture")
                     ? VRCExpressionParameters.ValueType.Int
-                    : VRCExpressionParameters.ValueType.Float)));
+                    : p.name.EndsWith("ArmTracked")
+                        ? VRCExpressionParameters.ValueType.Bool
+                        : VRCExpressionParameters.ValueType.Float)));
 
             Object.DestroyImmediate(asset);
         }
@@ -159,30 +162,61 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
 
             var arms = AvatarSetupWindow.SpecsToDeclare(new string[0], HandMode.Off, includeArms: true)
                 .Select(s => s.Name).ToArray();
-            Assert.Contains("VCO_L_ArmUpDown", arms);
-            Assert.Contains("VCO_R_ArmUpDown", arms);
-            Assert.AreEqual(OscParameterSpec.Core.Count() + 2, arms.Length);
+            foreach (var side in new[] { "L", "R" })
+            {
+                Assert.Contains($"VCO_{side}_ArmTracked", arms);
+                Assert.Contains($"VCO_{side}_ArmUpDown", arms);
+                Assert.Contains($"VCO_{side}_ArmAcross", arms);
+                Assert.Contains($"VCO_{side}_Elbow", arms);
+            }
+            Assert.AreEqual(OscParameterSpec.Core.Count() + 8, arms.Length,
+                "arm toggle declares 2 Bool gates + 6 floats (issue #28 phase 2)");
         }
 
         [Test]
         public void Merge_DeclaresArmAndCurlFloats_WithZeroDefaults()
         {
-            // The arm params' 0 default matters doubly: it is also the
-            // tracker's explicit "hand untracked" value, which the arm
-            // layer's deadband maps to the empty Neutral passthrough state.
+            // The arm floats' 0 default matters doubly: it is also the value
+            // the tracker decays them to while the arm is untracked (issue
+            // #28 phase 2 contract).
             var asset = ScriptableObject.CreateInstance<VRCExpressionParameters>();
             asset.parameters = new VRCExpressionParameters.Parameter[0];
 
             VrcExpressionParametersMerger.Merge(
                 asset,
                 OscParameterSpec.All.Where(s =>
-                    s.Kind == OscParamKind.FingerCurl || s.Kind == OscParamKind.ArmUpDown));
+                    s.Kind == OscParamKind.FingerCurl || s.Kind == OscParamKind.ArmFloat));
 
-            Assert.AreEqual(12, asset.parameters.Length);
+            Assert.AreEqual(16, asset.parameters.Length, "10 curls + 6 arm direction/elbow floats");
             foreach (var p in asset.parameters)
             {
                 Assert.AreEqual(VRCExpressionParameters.ValueType.Float, p.valueType, p.name);
                 Assert.AreEqual(0f, p.defaultValue, 1e-6f, p.name);
+                Assert.IsTrue(p.networkSynced, p.name);
+            }
+
+            Object.DestroyImmediate(asset);
+        }
+
+        [Test]
+        public void Merge_DeclaresArmTrackedAsBool_DefaultFalse_NetworkSynced()
+        {
+            // Issue #28 phase 2: the ArmTracked gates must declare as Bool
+            // (the Animator's If/IfNot conditions key off a Bool parameter)
+            // resting false, so an avatar with no tracker keeps its arms on
+            // idle animation.
+            var asset = ScriptableObject.CreateInstance<VRCExpressionParameters>();
+            asset.parameters = new VRCExpressionParameters.Parameter[0];
+
+            VrcExpressionParametersMerger.Merge(
+                asset, OscParameterSpec.All.Where(s => s.Kind == OscParamKind.ArmTracked));
+
+            Assert.AreEqual(2, asset.parameters.Length);
+            foreach (var p in asset.parameters)
+            {
+                Assert.IsTrue(p.name.EndsWith("ArmTracked"), p.name);
+                Assert.AreEqual(VRCExpressionParameters.ValueType.Bool, p.valueType, p.name);
+                Assert.AreEqual(0f, p.defaultValue, 1e-6f, $"{p.name} rests false");
                 Assert.IsTrue(p.networkSynced, p.name);
             }
 

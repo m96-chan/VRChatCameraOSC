@@ -39,9 +39,10 @@ namespace VRChatCameraOsc.AvatarSetup
         /// modes are mutually exclusive (same Fingers muscle group,
         /// issue #27) and only the selected mode's parameters are declared.</summary>
         HandMode _handMode = HandMode.Gestures;
-        /// <summary>Wire the VCO_L/R_ArmUpDown arm-raise layers on the
-        /// Gesture controller (issue #28). Muscle-driven — just this toggle;
-        /// the 2 floats are declared only while it's on.</summary>
+        /// <summary>Wire the full-arm tracking layers on the Gesture
+        /// controller (issue #28 phase 2). Muscle-driven — just this toggle;
+        /// the 8 arm parameters (2 VCO_*_ArmTracked Bools + 6
+        /// UpDown/Across/Elbow floats) are declared only while it's on.</summary>
         bool _includeArms = true;
         bool _disableNativeEyelids = true;
         bool _pendingAutoFill;
@@ -136,7 +137,7 @@ namespace VRChatCameraOsc.AvatarSetup
                     "Per-finger curls (VCO_*Curl x10 Float — costs 80 param bits)",
                 });
             _includeArms = EditorGUILayout.ToggleLeft(
-                "Wire arm raise (VCO_L/R_ArmUpDown) to Humanoid arm muscles (Gesture layer)",
+                "Wire full-arm tracking (VCO_L/R_ArmTracked/UpDown/Across/Elbow) to Humanoid arm muscles (Gesture layer)",
                 _includeArms);
 
             var eyelidType = _avatar.customEyeLookSettings.eyelidType;
@@ -193,7 +194,8 @@ namespace VRChatCameraOsc.AvatarSetup
                     return _handMode == HandMode.Gestures;
                 case OscParamKind.FingerCurl:
                     return _handMode == HandMode.FingerCurls;
-                case OscParamKind.ArmUpDown:
+                case OscParamKind.ArmFloat:
+                case OscParamKind.ArmTracked:
                     return _includeArms;
                 default:
                     return true;
@@ -214,6 +216,13 @@ namespace VRChatCameraOsc.AvatarSetup
                     return spec.Name.StartsWith("VCO_L_")
                         ? OscAnimatorLayerBuilder.FingerCurlLeftKey
                         : OscAnimatorLayerBuilder.FingerCurlRightKey;
+                case OscParamKind.ArmFloat:
+                case OscParamKind.ArmTracked:
+                    // The four arm params of one side share one layer, keyed
+                    // by the UpDown name (issue #28 phase 2).
+                    return spec.Name.StartsWith("VCO_L_")
+                        ? OscAnimatorLayerBuilder.ArmLeftParam
+                        : OscAnimatorLayerBuilder.ArmRightParam;
                 default:
                     return spec.Name;
             }
@@ -439,9 +448,10 @@ namespace VRChatCameraOsc.AvatarSetup
                 // the Left/RightFingers parts.
                 OscAnimatorLayerBuilder.ApplyHandMode(gestureController, _handMode);
 
-                // Arm-raise layers (issue #28) — empty Neutral passthrough
-                // at the tracker's untracked 0.0, so idle/locomotion arm
-                // animation survives when no hand is on camera.
+                // Full-arm tracking layers (issue #28 phase 2) — gated by
+                // the VCO_*_ArmTracked Bool; while an arm is untracked the
+                // layer parks in an empty Idle state, so idle/locomotion
+                // arm animation survives when no arm is on camera.
                 if (_includeArms)
                 {
                     OscAnimatorLayerBuilder.AddArmLayer(gestureController, leftArm: true);
@@ -523,9 +533,11 @@ namespace VRChatCameraOsc.AvatarSetup
                       "are overridden while this mode is applied."
                     : "") +
                 (_includeArms
-                    ? "\n\nArm raise wired: VCO_L/R_ArmUpDown (Float -1..1) raise/lower each arm on the " +
-                      "Gesture layer; while a hand is untracked the tracker sends 0.0 and the layer parks " +
-                      "in an empty Neutral state, so the avatar's own idle arm animation keeps playing."
+                    ? "\n\nFull-arm tracking wired: VCO_L/R_ArmTracked (Bool) gates each arm's layer, " +
+                      "VCO_L/R_ArmUpDown + ArmAcross (Float -1..1) steer the arm direction and " +
+                      "VCO_L/R_Elbow (Float 0..1) bends the elbow on the Gesture layer; while an arm is " +
+                      "untracked the layer parks in an empty Idle state, so the avatar's own idle arm " +
+                      "animation keeps playing."
                     : "") +
                 (_includeHeadPose && !gestureCopiedDefaultHands
                     ? "\n\nCouldn't find the VRC SDK's default hand-gesture controller " +
@@ -644,9 +656,9 @@ namespace VRChatCameraOsc.AvatarSetup
         /// blend shape wired (issue #24 — unwired optionals cost no
         /// expression-parameter bits), plus the mode-gated hand/arm sets the
         /// current selection actually uses (gesture ints in Gestures mode,
-        /// the 10 curl floats in FingerCurls mode, the 2 arm floats while
-        /// the arm toggle is on — same declare-only-when-used
-        /// philosophy).</summary>
+        /// the 10 curl floats in FingerCurls mode, the 8 arm parameters —
+        /// 2 ArmTracked Bools + 6 UpDown/Across/Elbow floats — while the
+        /// arm toggle is on; same declare-only-when-used philosophy).</summary>
         internal static List<OscParamSpec> SpecsToDeclare(
             IEnumerable<string> wiredParamNames, HandMode handMode, bool includeArms)
         {
@@ -660,7 +672,8 @@ namespace VRChatCameraOsc.AvatarSetup
                             return handMode == HandMode.Gestures;
                         case OscParamKind.FingerCurl:
                             return handMode == HandMode.FingerCurls;
-                        case OscParamKind.ArmUpDown:
+                        case OscParamKind.ArmFloat:
+                        case OscParamKind.ArmTracked:
                             return includeArms;
                         default:
                             return !s.Optional || wired.Contains(s.Name);

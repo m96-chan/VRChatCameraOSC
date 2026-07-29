@@ -45,7 +45,10 @@ mirroring `src/mapping/unified.rs`):
 | `v2/Head/Yaw` / `v2/Head/Pitch` / `v2/Head/Roll` | `-1..1` | 0 | Humanoid head muscles — **one combined Gesture-layer blend tree** (issues #25/#27) |
 | `VCO_GestureLeft` / `VCO_GestureRight` | **Int** `0..7` | 0 | Humanoid finger muscles — one Gesture-layer hand-pose layer per hand; declared only in the **Gestures** hand mode ([issue #8](https://github.com/m96-chan/VRChatCameraOSC/issues/8), [below](#hand-tracking-gestures-or-per-finger-curls)) |
 | `VCO_L_ThumbCurl` / `IndexCurl` / `MiddleCurl` / `RingCurl` / `LittleCurl` + `VCO_R_*` | `0..1` | 0 | Humanoid finger stretch muscles (0 = straight, 1 = fully curled) — one nested-blend-tree Gesture layer per hand; declared only in the **Per-finger curls** hand mode (issue #8 phase 3, [below](#hand-tracking-gestures-or-per-finger-curls)) |
-| `VCO_L_ArmUpDown` / `VCO_R_ArmUpDown` | `-1..1` | 0 | Humanoid arm muscles (+1 = straight up, -1 = hanging; exactly 0 = hand untracked → passthrough) — one Gesture layer per arm; declared only while the arm toggle is on ([issue #28](https://github.com/m96-chan/VRChatCameraOSC/issues/28), [below](#arm-raise-vco_lr_armupdown)) |
+| `VCO_L_ArmTracked` / `VCO_R_ArmTracked` | **Bool** | false | gate: true while that arm is tracked — switches the arm layer between passthrough and tracking ([issue #28](https://github.com/m96-chan/VRChatCameraOSC/issues/28) phase 2, [below](#full-arm-tracking-vco_lr_armtrackedupdownacrosselbow)) |
+| `VCO_L_ArmUpDown` / `VCO_R_ArmUpDown` | `-1..1` | 0 | upper-arm raise (−1 = hanging, 0 = horizontal *or* pointing at the camera, +1 = overhead) — y-axis of the per-arm 2D blend tree |
+| `VCO_L_ArmAcross` / `VCO_R_ArmAcross` | `-1..1` | 0 | upper-arm sweep (+1 = across the chest toward the opposite shoulder, −1 = out away from the body) — x-axis of the per-arm 2D blend tree |
+| `VCO_L_Elbow` / `VCO_R_Elbow` | `0..1` | 0 | elbow bend (0 = straight, 1 = fully bent) — nested elbow dimension of every direction anchor |
 
 Plus **optional extras** (issue #24) — declared (and costing expression
 parameter bits) **only when you wire a blend shape** to them:
@@ -129,32 +132,38 @@ empty-Neutral passthrough** — the curl layers always own the fingers while
 applied, so VRChat's keyboard/controller gestures are overridden in this
 mode.
 
-### Arm raise (`VCO_L/R_ArmUpDown`)
+### Full-arm tracking (`VCO_L/R_ArmTracked/UpDown/Across/Elbow`)
 
-Issue #28 phase 1: raising a hand into the webcam frame should raise the
-avatar's **arm**, not just pose the fingers. Leave the wizard's **"Wire arm
-raise"** toggle checked (default) and Apply adds one layer per arm to the
-Gesture controller (`OSC_VCO_L_ArmUpDown` / `OSC_VCO_R_ArmUpDown`), masked
-to that arm's body part only, driven by the tracker's
-`VCO_L/R_ArmUpDown` float (**-1** = hanging, **0** = mid /
-forward-horizontal, **+1** = straight up):
+Issue #28 phase 2: the tracker estimates real arm direction from MediaPipe
+Pose, so the avatar's arms follow yours — not just up/down but across the
+body and with elbow bend. Leave the wizard's **"Wire full-arm tracking"**
+toggle checked (default) and Apply adds one layer per arm to the Gesture
+controller (`OSC_VCO_L_ArmUpDown` / `OSC_VCO_R_ArmUpDown` — layer names
+kept from phase 1 so re-applying migrates a phase-1 avatar in place),
+masked to that arm's body part only, driven by four parameters per arm:
 
-- The default **Neutral** state is EMPTY (no animation). The tracker sends
-  **exactly 0.0 while the hand is untracked**, and the layer only leaves
-  Neutral when the parameter escapes a ±0.02 deadband — so with no hand on
-  camera the layer writes nothing and **the avatar's own idle/locomotion arm
-  animation keeps playing**.
-- The **Active** state is a Simple1D blend tree with anchor poses at
-  -1 / 0 / +1; every anchor clip writes **all nine** of that arm's muscles
-  (shoulder ×2, upper arm ×3, forearm ×2, wrist ×2 — the same per-group
-  lesson as the head/fingers). Neutral ⇄ Active transitions cross-fade over
-  0.25 s, so gaining/losing hand tracking raises/lowers the arm smoothly.
-- The anchor pose values (hang: Arm Down-Up −0.5 with a slightly bent
-  forearm; mid: reach forward-horizontal; up: Arm Down-Up 1, straight
-  forearm) are **provisional** — tuned on paper, pending live verification
-  in VRChat. In particular the `* Front-Back` muscle sign follows the
-  "second word = +1" convention the verified head muscles use (so forward =
-  negative), which issue #28 flags as the likely sign-flip candidate.
+- **`VCO_x_ArmTracked` (Bool)** gates the state machine: Idle → Active when
+  it turns true, Active → Rest when it turns false (the phase-1 ±0.02
+  deadband-on-UpDown gate is retired — it collided with "arm pointing at
+  the camera", which legitimately reads UpDown = Across = 0). The default
+  **Idle** state is EMPTY: while the arm is untracked the layer writes
+  nothing and **the avatar's own idle/locomotion arm animation keeps
+  playing**. The tracker sends ArmTracked = false and decays the floats to
+  exactly 0.0 when it loses the arm.
+- The **Active** state is a **2D Freeform Cartesian blend tree** —
+  x = `VCO_x_ArmAcross`, y = `VCO_x_ArmUpDown` — with five direction
+  anchors: down (0,−1), up (0,+1), across-chest (+1,0), out-to-side (−1,0)
+  and forward-at-camera (0,0). **Each anchor nests a Simple1D tree on
+  `VCO_x_Elbow`** (0 = straight, 1 = fully bent), so 10 pose clips per arm;
+  every clip writes **all nine** of that arm's muscles (shoulder ×2, upper
+  arm ×3, forearm ×2, wrist ×2 — the same per-group lesson as the
+  head/fingers) as flat 1-second curves.
+- Losing tracking travels through an explicit **Rest** hanging pose before
+  handing back to Idle (write-defaults-off residue lesson from phase 1), so
+  the arm visibly settles instead of freezing mid-air.
+- The 10 pose muscle tables are **provisional** — anchored to the
+  phase-1 live-tuned hang/overhead values, with the across/out/forward and
+  elbow-bent rows tuned on paper pending live verification in VRChat.
 - No `VRCAnimatorTrackingControl`: Desktop arms are animation-driven (the
   avatar's own idle animation moving them proves it). If live testing shows
   IK stealing the arms after all, the fallback is the head-saga recipe

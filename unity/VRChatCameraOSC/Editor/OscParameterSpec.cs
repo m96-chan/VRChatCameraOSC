@@ -42,12 +42,23 @@ namespace VRChatCameraOsc.AvatarSetup
         /// exclusive with <see cref="GestureInt"/>.</summary>
         FingerCurl,
 
-        /// <summary>Float -1..1 arm raise (issue #28): +1 = arm straight up,
-        /// -1 = hanging, exactly 0.0 = hand untracked (the tracker's
-        /// contract) — the layer's deadband parks in an empty Neutral state
-        /// there so idle/locomotion arm animation passes through. Declared
-        /// only when the wizard's arm toggle is on.</summary>
-        ArmUpDown,
+        /// <summary>Float arm-direction/elbow channel (issue #28 phase 2):
+        /// <c>VCO_*_ArmUpDown</c> (-1 hanging .. 0 horizontal-or-at-camera ..
+        /// +1 overhead) and <c>VCO_*_ArmAcross</c> (+1 across the chest ..
+        /// -1 out away from the body) feed the per-arm 2D blend tree;
+        /// <c>VCO_*_Elbow</c> (0 straight .. 1 fully bent) feeds the nested
+        /// elbow dimension. The tracker decays all of them to exactly 0.0
+        /// while the arm is untracked. Declared only when the wizard's arm
+        /// toggle is on.</summary>
+        ArmFloat,
+
+        /// <summary>Bool <c>VCO_*_ArmTracked</c> (issue #28 phase 2): true
+        /// while that arm is tracked — the arm layer's state-machine gate.
+        /// Replaces the phase-1 ±0.02 deadband-on-UpDown trick, which
+        /// collided with "arm pointing at the camera" legitimately reading
+        /// (0,0). Declared as a <b>Bool</b> expression parameter, default
+        /// false. Declared only when the wizard's arm toggle is on.</summary>
+        ArmTracked,
     }
 
     /// <summary>
@@ -162,12 +173,25 @@ namespace VRChatCameraOsc.AvatarSetup
             new OscParamSpec("VCO_R_MiddleCurl", 0f, 1f, 0f, OscParamKind.FingerCurl),
             new OscParamSpec("VCO_R_RingCurl", 0f, 1f, 0f, OscParamKind.FingerCurl),
             new OscParamSpec("VCO_R_LittleCurl", 0f, 1f, 0f, OscParamKind.FingerCurl),
-            // Arm raise (issue #28 phase 1): -1 hanging .. +1 straight up;
-            // the tracker sends exactly 0.0 while the hand is untracked, so
-            // the arm layer's deadband hands control back to idle/locomotion.
-            // Declared only when the wizard's arm toggle is on.
-            new OscParamSpec("VCO_L_ArmUpDown", -1f, 1f, 0f, OscParamKind.ArmUpDown),
-            new OscParamSpec("VCO_R_ArmUpDown", -1f, 1f, 0f, OscParamKind.ArmUpDown),
+            // Full-arm tracking (issue #28 phase 2, MediaPipe Pose): per arm
+            // one Bool gate + three direction/elbow floats. ArmTracked is
+            // the state-machine gate (true while the arm is tracked) — the
+            // phase-1 deadband-on-UpDown trick is retired because "arm
+            // pointing at the camera" legitimately reads (0,0). UpDown is
+            // the upper-arm direction cosine (-1 hanging, 0 horizontal OR at
+            // the camera, +1 overhead); Across is +1 toward the opposite
+            // shoulder / -1 out away from the body; Elbow is 0 straight ..
+            // 1 fully bent. Untracked: the tracker sends ArmTracked=false
+            // and decays the floats to exactly 0.0. Declared only when the
+            // wizard's arm toggle is on.
+            new OscParamSpec("VCO_L_ArmTracked", 0f, 1f, 0f, OscParamKind.ArmTracked),
+            new OscParamSpec("VCO_R_ArmTracked", 0f, 1f, 0f, OscParamKind.ArmTracked),
+            new OscParamSpec("VCO_L_ArmUpDown", -1f, 1f, 0f, OscParamKind.ArmFloat),
+            new OscParamSpec("VCO_R_ArmUpDown", -1f, 1f, 0f, OscParamKind.ArmFloat),
+            new OscParamSpec("VCO_L_ArmAcross", -1f, 1f, 0f, OscParamKind.ArmFloat),
+            new OscParamSpec("VCO_R_ArmAcross", -1f, 1f, 0f, OscParamKind.ArmFloat),
+            new OscParamSpec("VCO_L_Elbow", 0f, 1f, 0f, OscParamKind.ArmFloat),
+            new OscParamSpec("VCO_R_Elbow", 0f, 1f, 0f, OscParamKind.ArmFloat),
             // ---- Optional extras (issue #24): declared only when wired, so
             // they cost expression-parameter bits only on avatars that have
             // the shapes. All are ARKit-52-drivable and already emitted by
@@ -200,7 +224,8 @@ namespace VRChatCameraOsc.AvatarSetup
         {
             return kind == OscParamKind.GestureInt
                 || kind == OscParamKind.FingerCurl
-                || kind == OscParamKind.ArmUpDown;
+                || kind == OscParamKind.ArmFloat
+                || kind == OscParamKind.ArmTracked;
         }
 
         /// <summary>The always-declared subset: not Optional (issue #24

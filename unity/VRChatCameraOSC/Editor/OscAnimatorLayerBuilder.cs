@@ -491,12 +491,36 @@ namespace VRChatCameraOsc.AvatarSetup
         public const string FingerCurlLeftKey = "VCO_L_FingerCurls";
         public const string FingerCurlRightKey = "VCO_R_FingerCurls";
 
-        /// <summary>Animator/expression parameter names for the arm-raise
-        /// layers (issue #28): Float -1..1, +1 = straight up, -1 = hanging.
-        /// The tracker sends exactly 0.0 while the hand is untracked — the
-        /// layer's deadband rests in an empty Neutral state there.</summary>
+        /// <summary>Layer keys for the per-arm layers (issue #28). Kept at
+        /// the phase-1 UpDown parameter names so the layer asset name stays
+        /// <c>OSC_VCO_L/R_ArmUpDown</c> — re-applying over a phase-1 avatar
+        /// then replaces the old 1-D layer in place instead of orphaning it.
+        /// The layer's real Animator parameters are the four
+        /// <see cref="ArmParams"/> of that arm (phase 2: Bool gate + three
+        /// direction/elbow floats).</summary>
         public const string ArmLeftParam = "VCO_L_ArmUpDown";
         public const string ArmRightParam = "VCO_R_ArmUpDown";
+
+        /// <summary>The four Animator/expression parameters of one arm
+        /// (issue #28 phase 2), gate first: <c>VCO_x_ArmTracked</c> (Bool,
+        /// true while the arm is tracked — the state-machine gate),
+        /// <c>VCO_x_ArmUpDown</c> (Float -1 hanging .. +1 overhead, 0 =
+        /// horizontal OR pointing at the camera), <c>VCO_x_ArmAcross</c>
+        /// (Float +1 across the chest .. -1 out away from the body) and
+        /// <c>VCO_x_Elbow</c> (Float 0 straight .. 1 fully bent). The
+        /// tracker sends ArmTracked=false and decays the floats to exactly
+        /// 0.0 while the arm is untracked.</summary>
+        public static string[] ArmParams(bool leftArm)
+        {
+            var side = leftArm ? "L" : "R";
+            return new[]
+            {
+                $"VCO_{side}_ArmTracked",
+                $"VCO_{side}_ArmUpDown",
+                $"VCO_{side}_ArmAcross",
+                $"VCO_{side}_Elbow",
+            };
+        }
 
         /// <summary>The five per-finger curl parameter names of one hand, in
         /// tree-nesting order (Thumb outermost — matches <see cref="Fingers"/>).
@@ -658,54 +682,94 @@ namespace VRChatCameraOsc.AvatarSetup
             }
         }
 
-        /// <summary>Deadband around the tracker's exactly-0.0
-        /// hand-untracked value: outside it the arm layer's Active state
-        /// takes the arm, inside it the empty Neutral state hands the arm
-        /// back to idle/locomotion.</summary>
-        const float ArmDeadband = 0.02f;
-
-        /// <summary>Seconds of cross-fade for the arm layer's Neutral ⇄
-        /// Active transitions — long enough that gaining/losing hand
+        /// <summary>Seconds of cross-fade for the arm layer's Idle ⇄
+        /// Active ⇄ Rest transitions — long enough that gaining/losing arm
         /// tracking raises/lowers the arm smoothly instead of snapping.</summary>
         const float ArmTransitionSeconds = 0.25f;
 
-        /// <summary>
-        /// Per-arm muscle anchor poses for <see cref="AddArmLayer"/>:
-        /// muscle values at parameter -1 (hanging), 0 (mid,
-        /// forward-horizontal) and +1 (straight up). PROVISIONAL — tuned on
-        /// paper, to be verified live (issue #28 expects a sign-flip round
-        /// like the head yaw needed). Notes:
-        /// - Muscle sign convention observed on the verified head muscles:
-        ///   the name's SECOND word is +1 ("Down-Up" +1 = up, "Left-Right"
-        ///   +1 = right) — so "Front-Back" +1 = back, and reaching forward
-        ///   is NEGATIVE Front-Back. That's the least-certain guess here.
-        /// - "Forearm Stretch" +1 = straight, -1 = fully bent (same
-        ///   convention as the finger "Stretched" muscles).
-        /// - Hanging uses Arm Down-Up -0.5 (not -1) plus a slightly bent
-        ///   forearm — a relaxed hang, not a rigid pole.
-        /// - Every anchor writes ALL nine arm-group muscles (issue #27
-        ///   group lesson): wrist/twists ride at 0 rather than being left
-        ///   unwritten.
-        /// </summary>
-        /// <summary>Revised after the first live round (issue #28): the
-        /// original table kept the forearm near-straight throughout
-        /// ("肘がきいていない"), reading as a stiff robot arm. The raise now
-        /// travels through a strongly bent elbow at mid height (a natural
-        /// wave: the bend does the lifting, hand near the face) and
-        /// straightens back out overhead. Values remain provisional live
-        /// tuning material.</summary>
-        static readonly (string muscle, float hanging, float mid, float up)[] ArmPoseTable =
+        /// <summary>The nine muscles of one arm's muscle group, in the order
+        /// the <see cref="ArmAnchorTable"/> pose rows list their values.
+        /// Sign conventions (verified live for the head muscles, issue #27):
+        /// the name's SECOND word is +1 — "Down-Up" +1 = up, "Front-Back"
+        /// +1 = back (so reaching forward is NEGATIVE), "In-Out" +1 = out.
+        /// "Forearm Stretch" +1 = straight, -1 = fully bent (same as the
+        /// finger "Stretched" muscles). Muscle names are per-side
+        /// ("Left Arm Down-Up" / "Right Arm Down-Up") with identical,
+        /// body-relative values — Unity mirrors them, so one table serves
+        /// both arms.</summary>
+        static readonly string[] ArmMuscles =
         {
-            //  muscle                 -1 hang   0 mid   +1 up
-            ("Shoulder Down-Up",       -0.1f,    0.1f,   0.5f),
-            ("Shoulder Front-Back",     0f,     -0.2f,   0f),
-            ("Arm Down-Up",            -0.5f,    0.1f,   0.95f),
-            ("Arm Front-Back",          0f,     -0.5f,   0f),
-            ("Arm Twist In-Out",        0f,      0f,     0f),
-            ("Forearm Stretch",         0.85f,  -0.45f,  0.7f),
-            ("Forearm Twist In-Out",    0f,      0f,     0f),
-            ("Hand Down-Up",            0f,      0.1f,   0f),
-            ("Hand In-Out",             0f,      0f,     0f),
+            "Shoulder Down-Up",
+            "Shoulder Front-Back",
+            "Arm Down-Up",
+            "Arm Front-Back",
+            "Arm Twist In-Out",
+            "Forearm Stretch",
+            "Forearm Twist In-Out",
+            "Hand Down-Up",
+            "Hand In-Out",
+        };
+
+        /// <summary>
+        /// The five 2D anchor poses of <see cref="AddArmLayer"/>'s Freeform
+        /// Cartesian blend tree (issue #28 phase 2), each with an
+        /// elbow-straight and an elbow-fully-bent muscle row (the nested
+        /// Simple1D elbow dimension), 10 poses per arm total. Anchor
+        /// positions are (Across, UpDown) in the tracker's parameter space:
+        /// UpDown -1 = hanging / +1 = overhead / 0 = horizontal OR pointing
+        /// at the camera; Across +1 = toward the opposite shoulder / -1 =
+        /// out away from the body / 0 = vertical-forward plane.
+        ///
+        /// Values are PROVISIONAL live-tuning material, calibrated against
+        /// the phase-1 table that WAS live-tuned (hang: Arm Down-Up -0.5,
+        /// Forearm Stretch 0.85; overhead: Arm Down-Up 0.95, Forearm
+        /// Stretch 0.7). Muscle order per row = <see cref="ArmMuscles"/>.
+        /// Every row writes ALL nine muscles (issue #27 group lesson —
+        /// VRChat composes humanoid Override layers per masked muscle
+        /// group, partial writes break the unwritten muscles).
+        /// </summary>
+        static readonly (string name, float across, float upDown, float[] straight, float[] bent)[] ArmAnchorTable =
+        {
+            // Muscle order:  ShDU   ShFB   ArmDU  ArmFB  ATwIO  FaStr  FaTwIO HaDU  HaIO
+            ("down", 0f, -1f,
+                // Relaxed hang — the phase-1 live-tuned rest pose: upper arm
+                // a soft -0.5 (not a rigid pole), forearm nearly straight.
+                new[] { -0.1f,  0f,   -0.5f,  0f,    0f,    0.85f, 0f,    0f,   0f },
+                // Bicep-curl hang: upper arm stays down, forearm folds up in
+                // front (hand near the shoulder), slight palm-in twist.
+                new[] { -0.1f,  0f,   -0.5f,  0f,    0f,   -0.8f, -0.3f,  0f,   0f }),
+            ("up", 0f, 1f,
+                // Straight overhead — the phase-1 live-tuned top pose:
+                // shoulder shrugged up, arm almost vertical, forearm mostly
+                // straight.
+                new[] {  0.5f,  0f,    0.95f, 0f,    0f,    0.7f,  0f,    0f,   0f },
+                // Overhead with bent elbow: hand drops behind/above the head
+                // (stretch/scratch-the-neck pose).
+                new[] {  0.5f,  0f,    0.95f, 0f,    0f,   -0.8f, -0.3f,  0f,   0f }),
+            ("across", 1f, 0f,
+                // Horizontal reach across the chest toward the opposite
+                // shoulder: strong arm-forward (Front-Back negative) plus
+                // shoulder protraction (Shoulder Front-Back negative) gives
+                // the cross-body sweep; upper arm slightly under horizontal.
+                new[] {  0.1f, -0.5f,  0.25f, -0.9f, 0f,    0.85f, 0f,    0f,   0f },
+                // Hand lands on the opposite shoulder (arm hugs the chest).
+                new[] {  0.1f, -0.5f,  0.25f, -0.9f, 0f,   -0.8f, -0.3f,  0f,   0f }),
+            ("out", -1f, 0f,
+                // Horizontal out to the side, T-pose-ish: Arm Down-Up in the
+                // 0.4-ish horizontal range, no front-back component.
+                new[] {  0.2f,  0f,    0.4f,  0f,    0f,    0.85f, 0f,    0f,   0f },
+                // Bicep-flex from the T: upper arm stays out, forearm folds
+                // up (the 💪 pose).
+                new[] {  0.2f,  0f,    0.4f,  0f,    0f,   -0.8f, -0.3f,  0f,   0f }),
+            ("forward", 0f, 0f,
+                // Horizontal pointing forward at the camera: strong
+                // arm-forward, slight shoulder protraction (matches the
+                // phase-1 mid pose's direction values).
+                new[] {  0.1f, -0.2f,  0.3f, -0.6f,  0f,    0.85f, 0f,    0f,   0f },
+                // Elbow bent with the upper arm forward: hand comes back
+                // toward the face — the natural wave the phase-1 mid pose
+                // approximated with a half bend.
+                new[] {  0.1f, -0.2f,  0.3f, -0.6f,  0f,   -0.8f, -0.3f,  0.1f, 0f }),
         };
 
         /// <summary>The animatable muscle-curve property names for one arm's
@@ -718,28 +782,39 @@ namespace VRChatCameraOsc.AvatarSetup
         internal static IEnumerable<string> ArmMuscleProperties(bool leftArm)
         {
             var side = leftArm ? "Left" : "Right";
-            return ArmPoseTable.Select(e => $"{side} {e.muscle}");
+            return ArmMuscles.Select(m => $"{side} {m}");
         }
 
         /// <summary>
-        /// ONE Gesture-controller layer per arm (issue #28 phase 1,
-        /// <c>OSC_VCO_L_ArmUpDown</c> / <c>OSC_VCO_R_ArmUpDown</c>) raising
-        /// and lowering that arm from the tracker's <c>VCO_*_ArmUpDown</c>
-        /// float (-1 hanging .. +1 straight up):
+        /// ONE Gesture-controller layer per arm (issue #28 phase 2,
+        /// <c>OSC_VCO_L_ArmUpDown</c> / <c>OSC_VCO_R_ArmUpDown</c>) posing
+        /// the whole arm from the tracker's MediaPipe-Pose arm parameters
+        /// (<see cref="ArmParams"/>):
         ///
-        /// - The default <b>Neutral</b> state is EMPTY (no motion): while
-        ///   the parameter sits inside the ±<see cref="ArmDeadband"/>
-        ///   deadband — tracker off, or hand untracked (the tracker sends
-        ///   exactly 0.0 then) — the layer writes nothing, so the avatar's
-        ///   own idle/locomotion arm animation passes through untouched.
-        /// - The <b>Active</b> state is a Simple1D tree on the parameter
-        ///   with anchors at -1 / 0 / +1 (<see cref="ArmPoseTable"/>), every
-        ///   anchor clip writing ALL nine arm muscles as flat 1-second
-        ///   curves (issue #27 group lesson + real-length convention).
-        /// - Neutral→Active on Greater +deadband OR Less -deadband (two
-        ///   transitions); Active→Neutral when back inside the deadband
-        ///   (ONE transition with both conditions AND-ed). 0.25 s fixed
-        ///   duration both ways for a smooth raise/lower.
+        /// - The state machine is gated by the <c>VCO_x_ArmTracked</c> Bool
+        ///   (phase 2): Idle→Active on If, Active→Rest on IfNot,
+        ///   Rest→Active on If (re-acquire mid-settle), Rest→Idle on exit
+        ///   time. The phase-1 ±0.02 deadband-on-UpDown gate is retired —
+        ///   it collided with "arm pointing at the camera", which
+        ///   legitimately reads (0,0).
+        /// - The default <b>Idle</b> state is EMPTY (no motion): while the
+        ///   arm is untracked the layer writes nothing, so the avatar's own
+        ///   idle/locomotion arm animation passes through untouched.
+        /// - The <b>Active</b> state is a 2D Freeform Cartesian tree,
+        ///   x = <c>VCO_x_ArmAcross</c>, y = <c>VCO_x_ArmUpDown</c>, with
+        ///   five direction anchors (<see cref="ArmAnchorTable"/>: down /
+        ///   up / across-chest / out-to-side / forward-at-camera). Each
+        ///   anchor is itself a nested Simple1D tree on <c>VCO_x_Elbow</c>
+        ///   (0 straight / 1 fully bent) — 10 leaf clips per arm, every
+        ///   leaf writing ALL nine arm muscles as flat 1-second curves
+        ///   (issue #27 group lesson + real-length convention: zero-length
+        ///   clips never advance normalized time in the client, issue #25).
+        /// - <b>Rest</b> carries the hanging pose: the release path travels
+        ///   through it before handing over to the empty Idle state (issue
+        ///   #28 live feedback — with write-defaults off, an
+        ///   empty-state-only release froze the arm wherever tracking was
+        ///   lost). Rest→Idle fires on exit time 1.2 so any WD-off residue
+        ///   IS the rest pose when idle animation resumes.
         /// - Masked to that arm's body part only
         ///   (AvatarMaskBodyPart.Left/RightArm) — composes with the
         ///   fingers-masked hand layers, they touch disjoint groups.
@@ -752,66 +827,80 @@ namespace VRChatCameraOsc.AvatarSetup
         /// </summary>
         public static void AddArmLayer(AnimatorController controller, bool leftArm)
         {
-            var paramName = leftArm ? ArmLeftParam : ArmRightParam;
+            var key = leftArm ? ArmLeftParam : ArmRightParam;
 
-            // Full sub-asset cleanup before rebuilding (idempotent re-Apply).
-            RemoveLayer(controller, paramName);
-            EnsureFloatParameter(controller, paramName);
+            // Full sub-asset cleanup before rebuilding (idempotent re-Apply;
+            // also migrates a phase-1 1-D layer in place — same layer name).
+            RemoveLayer(controller, key);
 
-            var layerName = LayerNameFor(paramName);
+            var armParams = ArmParams(leftArm);
+            var trackedParam = armParams[0];
+            var upDownParam = armParams[1];
+            var acrossParam = armParams[2];
+            var elbowParam = armParams[3];
+            if (!controller.parameters.Any(p => p.name == trackedParam))
+            {
+                controller.AddParameter(trackedParam, AnimatorControllerParameterType.Bool);
+            }
+            EnsureFloatParameter(controller, upDownParam);
+            EnsureFloatParameter(controller, acrossParam);
+            EnsureFloatParameter(controller, elbowParam);
+
+            var layerName = LayerNameFor(key);
             var stateMachine = new AnimatorStateMachine { name = layerName, hideFlags = HideFlags.HideInHierarchy };
             AssetDatabase.AddObjectToAsset(stateMachine, controller);
 
-            // Three states (issue #28 live feedback: with an
-            // empty-state-only release, write-defaults-off residue left the
-            // arm frozen wherever it was when the hand left the frame —
-            // "デフォルトの位置に戻らない"). The release path now travels
-            // through an explicit Rest pose, THEN hands over to the empty
-            // Idle state: the arm visibly returns to a defined hanging pose
-            // within ~0.3 s, and once Idle takes over any WD-off residue IS
-            // the rest pose, so idle/locomotion animation resumes from a
-            // sane baseline either way.
             var idle = stateMachine.AddState("Idle");
             idle.motion = null;
             idle.writeDefaultValues = false;
             stateMachine.defaultState = idle;
 
-            var tree = new BlendTree
+            // 2D direction tree with a nested elbow dimension per anchor.
+            // useAutomaticThresholds stays false everywhere — automatic mode
+            // silently rewrites Simple1D thresholds on AddChild (the eyelid
+            // 0.75-neutral bug, issue #21).
+            var top = new BlendTree
             {
                 name = layerName,
-                blendType = BlendTreeType.Simple1D,
-                blendParameter = paramName,
+                blendType = BlendTreeType.FreeformCartesian2D,
+                blendParameter = acrossParam,
+                blendParameterY = upDownParam,
                 useAutomaticThresholds = false,
             };
-            AssetDatabase.AddObjectToAsset(tree, controller);
-            foreach (var anchor in new[] { -1f, 0f, 1f })
+            AssetDatabase.AddObjectToAsset(top, controller);
+            foreach (var (name, across, upDown, straight, bent) in ArmAnchorTable)
             {
-                tree.AddChild(ArmPoseClip(controller, layerName, leftArm, anchor, null), anchor);
+                var elbow = new BlendTree
+                {
+                    name = $"{layerName}_{name}",
+                    blendType = BlendTreeType.Simple1D,
+                    blendParameter = elbowParam,
+                    useAutomaticThresholds = false,
+                };
+                AssetDatabase.AddObjectToAsset(elbow, controller);
+                elbow.AddChild(ArmPoseClip(controller, $"{layerName}_{name}_straight", leftArm, straight), 0f);
+                elbow.AddChild(ArmPoseClip(controller, $"{layerName}_{name}_bent", leftArm, bent), 1f);
+                top.AddChild(elbow, new Vector2(across, upDown));
             }
 
             var active = stateMachine.AddState("Active");
-            active.motion = tree;
+            active.motion = top;
             active.writeDefaultValues = false;
 
+            // Rest = the hanging pose (the "down"/straight-elbow anchor row).
             var rest = stateMachine.AddState("Rest");
-            rest.motion = ArmPoseClip(controller, layerName, leftArm, -1f, "_Rest");
+            rest.motion = ArmPoseClip(controller, layerName + "_Rest", leftArm, ArmAnchorTable[0].straight);
             rest.writeDefaultValues = false;
 
-            // Raise: leave Idle (or interrupt Rest) as soon as the parameter
-            // escapes the deadband in either direction (a condition can't
-            // express OR, so two transitions each).
-            foreach (var from in new[] { idle, rest })
-            {
-                ConfigureArmTransition(from.AddTransition(active))
-                    .AddCondition(AnimatorConditionMode.Greater, ArmDeadband, paramName);
-                ConfigureArmTransition(from.AddTransition(active))
-                    .AddCondition(AnimatorConditionMode.Less, -ArmDeadband, paramName);
-            }
-            // Lower: Active -> Rest only when INSIDE the deadband — both
-            // conditions on one transition AND together.
-            var release = ConfigureArmTransition(active.AddTransition(rest));
-            release.AddCondition(AnimatorConditionMode.Less, ArmDeadband, paramName);
-            release.AddCondition(AnimatorConditionMode.Greater, -ArmDeadband, paramName);
+            // Raise: leave Idle (or interrupt Rest) the moment the arm is
+            // tracked again.
+            ConfigureArmTransition(idle.AddTransition(active))
+                .AddCondition(AnimatorConditionMode.If, 0f, trackedParam);
+            ConfigureArmTransition(rest.AddTransition(active))
+                .AddCondition(AnimatorConditionMode.If, 0f, trackedParam);
+            // Lower: Active -> Rest as soon as tracking is lost.
+            ConfigureArmTransition(active.AddTransition(rest))
+                .AddCondition(AnimatorConditionMode.IfNot, 0f, trackedParam);
             // Settle: Rest -> Idle on exit time (the 1 s rest clip plays
             // once, then idle animation takes back over).
             var settle = rest.AddTransition(idle);
@@ -821,11 +910,6 @@ namespace VRChatCameraOsc.AvatarSetup
             settle.duration = ArmTransitionSeconds;
 
             var layers = controller.layers.ToList();
-            var existingIndex = layers.FindIndex(l => l.name == layerName);
-            if (existingIndex >= 0)
-            {
-                layers.RemoveAt(existingIndex);
-            }
             layers.Add(new AnimatorControllerLayer
             {
                 name = layerName,
@@ -845,25 +929,25 @@ namespace VRChatCameraOsc.AvatarSetup
             return transition;
         }
 
-        /// <summary>One arm anchor clip writing ALL nine of that arm's
-        /// muscles as flat 1-second curves (<see cref="ArmPoseTable"/>).</summary>
+        /// <summary>One arm pose clip writing ALL nine of that arm's muscles
+        /// as flat 1-second curves — <paramref name="muscleValues"/> in
+        /// <see cref="ArmMuscles"/> order (a row of
+        /// <see cref="ArmAnchorTable"/>).</summary>
         static AnimationClip ArmPoseClip(
             AnimatorController controller,
-            string layerName,
+            string clipName,
             bool leftArm,
-            float anchor,
-            string nameSuffix)
+            float[] muscleValues)
         {
-            var clip = new AnimationClip { name = $"{layerName}_{nameSuffix ?? anchor.ToString("0.#")}" };
+            var clip = new AnimationClip { name = clipName };
             var side = leftArm ? "Left" : "Right";
-            foreach (var (muscle, hanging, mid, up) in ArmPoseTable)
+            for (var i = 0; i < ArmMuscles.Length; i++)
             {
-                var value = anchor < 0f ? hanging : (anchor > 0f ? up : mid);
                 var binding = EditorCurveBinding.FloatCurve(
-                    string.Empty, typeof(Animator), $"{side} {muscle}");
+                    string.Empty, typeof(Animator), $"{side} {ArmMuscles[i]}");
                 var curve = new AnimationCurve(
-                    new Keyframe(0f, value),
-                    new Keyframe(MuscleClipSeconds, value));
+                    new Keyframe(0f, muscleValues[i]),
+                    new Keyframe(MuscleClipSeconds, muscleValues[i]));
                 AnimationUtility.SetEditorCurve(clip, binding, curve);
             }
             AssetDatabase.AddObjectToAsset(clip, controller);
@@ -988,16 +1072,23 @@ namespace VRChatCameraOsc.AvatarSetup
                 Object.DestroyImmediate(layer.avatarMask, true);
             }
 
-            // The combined head layer and the per-hand finger-curl layers are
-            // keyed by pseudo-params; their real Animator parameters are the
-            // three head axes / that hand's five curl floats.
+            // The combined head layer, the per-hand finger-curl layers, and
+            // the per-arm layers are keyed by pseudo-params; their real
+            // Animator parameters are the three head axes / that hand's
+            // five curl floats / that arm's Bool gate + three floats
+            // (ArmLeftParam doubles as the UpDown parameter name, so the
+            // arm mapping is a superset of the bare-name fallback).
             var toDrop = paramName == CombinedHeadKey
                 ? HeadAxes.Select(a => a.param).ToArray()
                 : paramName == FingerCurlLeftKey
                     ? CurlParams(leftHand: true)
                     : paramName == FingerCurlRightKey
                         ? CurlParams(leftHand: false)
-                        : new[] { paramName };
+                        : paramName == ArmLeftParam
+                            ? ArmParams(leftArm: true)
+                            : paramName == ArmRightParam
+                                ? ArmParams(leftArm: false)
+                                : new[] { paramName };
             controller.parameters = controller.parameters.Where(p => !toDrop.Contains(p.name)).ToArray();
             return true;
         }

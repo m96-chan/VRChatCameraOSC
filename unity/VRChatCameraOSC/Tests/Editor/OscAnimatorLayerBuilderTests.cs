@@ -344,9 +344,18 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
                             OscAnimatorLayerBuilder.AddFingerCurlLayer(controller, left);
                         }
                         break;
-                    case OscParamKind.ArmUpDown:
-                        OscAnimatorLayerBuilder.AddArmLayer(
-                            controller, spec.Name == OscAnimatorLayerBuilder.ArmLeftParam);
+                    case OscParamKind.ArmTracked:
+                    case OscParamKind.ArmFloat:
+                        // Four specs (Bool gate + three floats) share one
+                        // per-arm layer (issue #28 phase 2).
+                        var leftArm = spec.Name.StartsWith("VCO_L_");
+                        var armKey = leftArm
+                            ? OscAnimatorLayerBuilder.ArmLeftParam
+                            : OscAnimatorLayerBuilder.ArmRightParam;
+                        if (!OscAnimatorLayerBuilder.HasLayer(controller, armKey))
+                        {
+                            OscAnimatorLayerBuilder.AddArmLayer(controller, leftArm);
+                        }
                         break;
                 }
             }
@@ -362,6 +371,11 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
                     return spec.Name.StartsWith("VCO_L_")
                         ? OscAnimatorLayerBuilder.FingerCurlLeftKey
                         : OscAnimatorLayerBuilder.FingerCurlRightKey;
+                case OscParamKind.ArmTracked:
+                case OscParamKind.ArmFloat:
+                    return spec.Name.StartsWith("VCO_L_")
+                        ? OscAnimatorLayerBuilder.ArmLeftParam
+                        : OscAnimatorLayerBuilder.ArmRightParam;
                 default:
                     return spec.Name;
             }
@@ -375,12 +389,16 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             Assert.AreEqual(OscParameterSpec.All.Count, _controller.parameters.Length);
             // CreateAnimatorControllerAtPath seeds one default "Base Layer";
             // AddLayer only ever replaces layers it owns (named "OSC_*").
-            // The three head axes share ONE combined layer (issue #27) and
-            // each hand's five curl floats share one per-hand layer.
+            // The three head axes share ONE combined layer (issue #27),
+            // each hand's five curl floats share one per-hand layer, and
+            // each arm's four params (Bool gate + three floats) share one
+            // per-arm layer (issue #28 phase 2).
             var headCount = OscParameterSpec.All.Count(s => s.Kind == OscParamKind.HeadPose);
             var curlCount = OscParameterSpec.All.Count(s => s.Kind == OscParamKind.FingerCurl);
+            var armCount = OscParameterSpec.All.Count(s =>
+                s.Kind == OscParamKind.ArmTracked || s.Kind == OscParamKind.ArmFloat);
             Assert.AreEqual(
-                OscParameterSpec.All.Count - headCount + 1 - curlCount + 2,
+                OscParameterSpec.All.Count - headCount + 1 - curlCount + 2 - armCount + 2,
                 _controller.layers.Count(l => l.name.StartsWith("OSC_")));
             foreach (var spec in OscParameterSpec.All)
             {

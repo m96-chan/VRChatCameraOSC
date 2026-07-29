@@ -64,9 +64,13 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
 
             foreach (var p in asset.parameters)
             {
+                // Everything is Float except the gesture ints (issue #8) and
+                // the ArmTracked Bool gates (issue #28 phase 2).
                 var expected = p.name.StartsWith("VCO_Gesture")
                     ? VRCExpressionParameters.ValueType.Int
-                    : VRCExpressionParameters.ValueType.Float;
+                    : p.name.EndsWith("ArmTracked")
+                        ? VRCExpressionParameters.ValueType.Bool
+                        : VRCExpressionParameters.ValueType.Float;
                 Assert.AreEqual(expected, p.valueType, p.name);
             }
             var left = asset.parameters.Single(p => p.name == "VCO_GestureLeft");
