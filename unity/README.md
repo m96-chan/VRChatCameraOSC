@@ -173,6 +173,45 @@ masked to that arm's body part only, driven by four parameters per arm:
   extends its combined `OSC_GestureMask` accordingly (issue #25 behavior,
   now covering Head + arms).
 
+### Binary face parameters (issue #29) — fitting the 256-bit budget
+
+A fully wired setup (face + hands + arms) can exceed VRChat's **256-bit
+synced-parameter budget** (the wizard's budget meter shows the projected
+total). The **"Binary-encode face parameters"** toggle (default off) declares
+each face float — the blend-shape/eyelid params *and* the three head axes —
+as a **VRCFT-standard binary parameter** instead of an 8-bit Float
+([docs.vrcft.io "Binary Parameters"](https://docs.vrcft.io/docs/v4.0/tutorial-avatars/tutorial-avatars-extras/parameters/types/binary)):
+
+- **Declared**: N Bool bits named `<param>1`, `<param>2`, `<param>4`, …
+  (suffix = the bit's power of two, LSB first) plus `<param>Negative` for
+  the signed `-1..1` head axes. N is the "Binary resolution" slider,
+  default **4 bits = 16 steps** (~85–100 bits saved on a fully wired
+  avatar: e.g. core-only face drops 96 → 51 bits). The tracker already
+  speaks this convention — its avatar-aware gating (issue #18) sees the bit
+  declarations and encodes each value with VRCFT's exact
+  `BinaryBaseParameter` quantization.
+- **Decoded**: one `OSC_BinaryDecode` layer per controller (FX for the
+  blend-shape/eyelid params, Gesture for the head axes) — a
+  write-defaults-ON state whose **Direct Blend Tree** has one child per
+  bit: a clip writing the original float Animator parameter (an Animated
+  Animator Parameter) to that bit's weight `2^k/(2^N−1)`, blended by the
+  bit's 0/1 value (VRChat casts a Bool expression parameter onto a
+  same-named **Float** animator parameter — the standard VRCFT trick).
+  Signed head axes select between a positive and a mirrored negative bit
+  tree on the `Negative` float. **Every existing driving layer is
+  untouched** — the eyelid 0.75-neutral tree and the combined 27-leaf head
+  tree just read the decoded value instead of a synced float.
+- **Eyes still rest open**: the `v2/EyeLid*` bit *defaults* encode the 0.75
+  neutral as `round(0.75 × 15) = 11` (bits 1+2+8 true), decoding to
+  11/15 ≈ 0.733 — the closest 4-bit step (issue #21's guard, binary
+  edition).
+- **Migration both ways**: re-Apply with the toggle flipped (or the
+  resolution changed) replaces the declarations and decode layers in
+  place; Remove cleans everything including the bit Bools.
+- **Trade-off**: expressions quantize to 2^N steps (4 bits = 16 levels per
+  channel). If stepping is visible live, raise the slider (each face param
+  then costs N bits).
+
 ### Why head pose lives on the Gesture layer, not FX
 
 Head pose is wired into the avatar's **Gesture** playable layer, with a
@@ -249,7 +288,11 @@ folder in first.)
    the Gesture layer — see [above](#why-head-pose-lives-on-the-gesture-layer-not-fx)).
    Note the caveat: while this is wired, VRChat's own head control (e.g.
    Desktop mouse-look) no longer moves the avatar's head.
-5. If your avatar has VRChat's native **Eyelids** (Eye Look → Eyelids, auto
+5. If the budget meter shows the projected bits near/over 256, check
+   **"Binary-encode face parameters"** (and pick a resolution — default 4
+   bits) to declare the face floats as VRCFT binary bit Bools instead; see
+   [Binary face parameters](#binary-face-parameters-issue-29--fitting-the-256-bit-budget).
+6. If your avatar has VRChat's native **Eyelids** (Eye Look → Eyelids, auto
    blink/eye-tracking) set to Blendshapes or Bones *and* you wired
    `v2/EyeLidLeft`/`v2/EyeLidRight`, a checkbox appears to disable it — leave
    it checked. Otherwise VRChat's own automatic blink independently
@@ -257,7 +300,7 @@ folder in first.)
    driven by OSC, e.g. a shared `vrc.blink`) on its own timer, fighting with —
    and sometimes fully masking — the OSC-driven blink. Re-enable it yourself
    in Eye Look settings if you ever remove the OSC blink wiring.
-6. The button at the bottom is a single **ON/OFF toggle** reflecting whether
+7. The button at the bottom is a single **ON/OFF toggle** reflecting whether
    this avatar currently has all parameters wired:
    - **OFF → click → Apply**: removes any retired custom10 leftovers
      ([migration](#migrating-from-the-retired-custom10-setup)); creates (or
@@ -274,7 +317,7 @@ folder in first.)
      BlendTree/AnimationClip/StateMachineBehaviour sub-assets) — a full
      undo, restoring VRChat's native head control, without touching anything
      else on the avatar's controllers or Expression Parameters.
-7. Verify **in VRChat** (upload or local test), not just in the editor —
+8. Verify **in VRChat** (upload or local test), not just in the editor —
    Humanoid muscle-driven additive layers and Animator direct-blend setups
    behave the same in-editor and in-client, but VRChat's own avatar
    validation/OSC pipeline is the real test.

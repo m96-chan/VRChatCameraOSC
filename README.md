@@ -273,6 +273,15 @@ Plus optional extras declared only when wired (issue #24): cheek puff,
 sideways jaw, pucker, funnel, frown, nose sneer, and an eye-wide shape on
 the `v2/EyeLid*` upper range — see [`unity/README.md`](unity/README.md).
 
+To fit VRChat's **256-bit synced-parameter budget** (issue #29), the wizard
+can optionally declare the face floats as **VRCFT-standard binary
+parameters** — N Bool bits `<param>1/2/4/8…` (+ `<param>Negative` for the
+signed head axes, default 4 bits = 16 steps) instead of 8-bit Floats, with
+an animator Direct-Blend-Tree decode layer reconstructing the values
+avatar-side (~half the face bits; face + per-finger curls + arms then fit
+together). The tracker's avatar-aware gating already encodes this
+convention (issue #18) — no tracker-side setting needed.
+
 Because these are the standard VRCFT names, a wizard-made avatar also works
 with VRCFaceTracking itself, and the tracker's avatar-aware gating sends
 exactly this declared subset. Avatars set up with the retired pre-#21
@@ -304,6 +313,8 @@ OSC host/port, camera device, and tracking settings will be configurable from th
 - [x] TUI: live values, status, and configuration
 - [x] Config file support
 - [x] Unity SDK: avatar setup wizard (Humanoid) — see [`unity/`](unity/)
+- [x] Wizard: VRCFT-style binary face parameters (`<param>1/2/4/8` +
+  `Negative`, Direct-Blend-Tree decode) to fit the 256-bit budget (issue #29)
 
 ## License
 

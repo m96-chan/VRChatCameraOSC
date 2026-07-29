@@ -835,6 +835,54 @@ mod tests {
         assert!(out.iter().all(|p| matches!(p.value, OscValue::Bool(_))));
     }
 
+    // The exact declaration shape the unity/ wizard's binary mode emits
+    // (issue #29): un-prefixed `<name>1/2/4/8` Bool bits per face float,
+    // plus `<name>Negative` for the signed head axes — including the
+    // nested-slash `v2/Head/*` names. Pins the Rust↔wizard contract.
+    #[test]
+    fn resolve_matches_wizard_binary_declarations() {
+        let cfg = cfg_with(vec![
+            decl("v2/JawOpen1", "Bool"),
+            decl("v2/JawOpen2", "Bool"),
+            decl("v2/JawOpen4", "Bool"),
+            decl("v2/JawOpen8", "Bool"),
+            decl("v2/Head/Yaw1", "Bool"),
+            decl("v2/Head/Yaw2", "Bool"),
+            decl("v2/Head/Yaw4", "Bool"),
+            decl("v2/Head/Yaw8", "Bool"),
+            decl("v2/Head/YawNegative", "Bool"),
+        ]);
+        let set = AvatarParamSet::resolve(&cfg, &["v2/JawOpen", "v2/Head/Yaw"], &[]);
+        assert_eq!(set.len(), 2);
+
+        let mut out = Vec::new();
+        // 4 bits → max_int = 16; 0.6 → floor(0.6*16) = 9 = 0b1001.
+        set.emit_value("v2/JawOpen", 0.6, &mut out);
+        // Signed axis: |-0.5| → floor(0.5*16) = 8 = 0b1000, Negative true.
+        set.emit_value("v2/Head/Yaw", -0.5, &mut out);
+        let get = |addr: &str| -> bool {
+            match out.iter().find(|p| p.name == addr) {
+                Some(OscParam {
+                    value: OscValue::Bool(b),
+                    ..
+                }) => *b,
+                other => panic!("{addr}: expected bool, got {other:?}"),
+            }
+        };
+        assert!(get("/avatar/parameters/v2/JawOpen1"));
+        assert!(!get("/avatar/parameters/v2/JawOpen2"));
+        assert!(!get("/avatar/parameters/v2/JawOpen4"));
+        assert!(get("/avatar/parameters/v2/JawOpen8"));
+        assert!(!get("/avatar/parameters/v2/Head/Yaw1"));
+        assert!(!get("/avatar/parameters/v2/Head/Yaw2"));
+        assert!(!get("/avatar/parameters/v2/Head/Yaw4"));
+        assert!(get("/avatar/parameters/v2/Head/Yaw8"));
+        assert!(get("/avatar/parameters/v2/Head/YawNegative"));
+        // 4 bits + 4 bits + Negative, all Bool, no floats.
+        assert_eq!(out.len(), 9);
+        assert!(out.iter().all(|p| matches!(p.value, OscValue::Bool(_))));
+    }
+
     #[test]
     fn int_declarations_are_ignored() {
         let cfg = cfg_with(vec![decl("FT/v2/JawOpen", "Int")]);

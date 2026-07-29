@@ -48,6 +48,15 @@ namespace VRChatCameraOsc.AvatarSetup
         /// the 8 arm parameters (2 VCO_*_ArmTracked Bools + 6
         /// UpDown/Across/Elbow floats) are declared only while it's on.</summary>
         bool _includeArms = true;
+        /// <summary>Declare the face floats as VRCFT binary Bool groups
+        /// (<c>v2/X1/2/4/8</c> + <c>Negative</c>) instead of 8-bit Floats
+        /// (issue #29): 4 bits per face param instead of 8, ~85 bits saved
+        /// on a fully wired avatar — the 256-bit-budget relief. Default off:
+        /// floats are lossless and simpler when the budget fits.</summary>
+        bool _binaryFace;
+        /// <summary>Binary resolution in bits per face float (issue #29):
+        /// 2^N steps. 4 (the VRCFT-community default) = 16 steps.</summary>
+        int _binaryBits = OscParameterSpec.DefaultBinaryBits;
         bool _disableNativeEyelids = true;
         bool _pendingAutoFill;
         Vector2 _scroll;
@@ -143,6 +152,21 @@ namespace VRChatCameraOsc.AvatarSetup
             _includeArms = EditorGUILayout.ToggleLeft(
                 "Wire full-arm tracking (VCO_L/R_ArmTracked/UpDown/Across/Elbow) to Humanoid arm muscles (Gesture layer)",
                 _includeArms);
+            // Issue #29: VRCFT-style binary parameters for the face floats —
+            // N Bool bits instead of one 8-bit Float per param (~85 bits
+            // saved at 4 bits on a fully wired avatar). The animator decodes
+            // them back; expressions quantize to 2^N steps.
+            _binaryFace = EditorGUILayout.ToggleLeft(
+                "Binary-encode face parameters (VRCFT-style, saves ~85 bits at 4 bits; " +
+                "expressions step in 2^N levels)",
+                _binaryFace);
+            if (_binaryFace)
+            {
+                EditorGUI.indentLevel++;
+                _binaryBits = EditorGUILayout.IntSlider(
+                    "Binary resolution (bits)", _binaryBits, 2, OscParameterSpec.MaxBinaryBits);
+                EditorGUI.indentLevel--;
+            }
 
             var eyelidType = _avatar.customEyeLookSettings.eyelidType;
             if (eyelidType != VRCAvatarDescriptor.EyelidType.None &&
@@ -159,7 +183,7 @@ namespace VRChatCameraOsc.AvatarSetup
             // arms no longer fits every avatar under VRChat's 256-bit cap).
             var projected = SpecsToDeclare(_positiveRenderer.Keys, _handMode, _includeArms, _excludedOptionals);
             var ownBits = VrcExpressionParametersMerger.ForeignSyncedBits(_avatar.expressionParameters);
-            var totalBits = ownBits + OscParameterSpec.BitCost(projected);
+            var totalBits = ownBits + OscParameterSpec.BitCost(projected, _binaryFace, _binaryBits);
             EditorGUILayout.LabelField(
                 "Parameter budget",
                 $"{totalBits} / 256 bits after Apply ({ownBits} from this avatar's own parameters)");
@@ -172,7 +196,11 @@ namespace VRChatCameraOsc.AvatarSetup
                     MessageType.Error);
             }
 
-            var wired = VrcExpressionParametersMerger.IsFullyWired(_avatar.expressionParameters, OscParameterSpec.Core);
+            // With the binary toggle on, "wired" means the bit Bool names
+            // are declared, not the float names (issue #29).
+            var wired = VrcExpressionParametersMerger.IsFullyWiredNames(
+                _avatar.expressionParameters,
+                OscParameterSpec.DeclarationNames(OscParameterSpec.Core, _binaryFace, _binaryBits));
             // Only the specs the current mode/toggles would wire count —
             // e.g. in gestures mode the 10 curl params are neither declared
             // nor expected to have layers.
@@ -414,21 +442,35 @@ namespace VRChatCameraOsc.AvatarSetup
             // retired parameters and their layers before wiring the v2/* set.
             RemoveLegacyCustom10(_avatar);
             var toDeclare = SpecsToDeclare(_positiveRenderer.Keys, _handMode, _includeArms, _excludedOptionals);
-            var added = VrcExpressionParametersMerger.Merge(expressionParameters, toDeclare);
-            // Params deselected since a previous Apply — un-wired optionals,
-            // the non-selected hand mode's set, arms with the toggle off:
-            // drop their declaration (stop paying bits) and, below, their
-            // stale layers.
-            var declaredNames = new HashSet<string>(toDeclare.Select(s => s.Name));
-            VrcExpressionParametersMerger.RemoveByName(
-                expressionParameters,
-                OscParameterSpec.All.Select(s => s.Name).Where(n => !declaredNames.Contains(n)));
+            // Merge the current declarations (binary Bool groups for the
+            // face floats when the issue #29 toggle is on) and sweep every
+            // other wizard-owned name: deselected optionals/modes, stale
+            // float declarations after switching to binary (and vice
+            // versa), stale bit Bools after a resolution change.
+            var added = VrcExpressionParametersMerger.SyncDeclarations(
+                expressionParameters, toDeclare, _binaryFace, _binaryBits);
             var unwiredOptional = OscParameterSpec.All
                 .Where(s => s.Optional &&
                     (!_positiveRenderer.ContainsKey(s.Name) || _excludedOptionals.Contains(s.Name)))
                 .ToList();
 
             var controller = EnsureFxController(_avatar);
+            // The binary decode layer (issue #29) must be added BEFORE the
+            // driving layers it feeds — animator parameter writes propagate
+            // to later-evaluated layers. With the toggle off, an existing
+            // decode layer is migration residue and comes out.
+            if (_binaryFace)
+            {
+                OscAnimatorLayerBuilder.AddBinaryDecodeLayer(
+                    controller,
+                    toDeclare.Where(s =>
+                        s.Kind == OscParamKind.BlendShape || s.Kind == OscParamKind.EyeLid),
+                    _binaryBits);
+            }
+            else
+            {
+                OscAnimatorLayerBuilder.RemoveLayer(controller, OscAnimatorLayerBuilder.BinaryDecodeKey);
+            }
             AnimatorController gestureController = null;
             var gestureCopiedDefaultHands = true;
             foreach (var spec in OscParameterSpec.All)
@@ -484,11 +526,29 @@ namespace VRChatCameraOsc.AvatarSetup
                 {
                     OscAnimatorLayerBuilder.RemoveLayer(gestureController, headSpec.Name);
                 }
+                // Head decode first (issue #29, same before-the-consumer
+                // rule as FX): reconstructs the three v2/Head/* floats from
+                // their bit Bools + Negative signs; the combined 27-leaf
+                // head tree below is unchanged and reads the decoded AAPs.
+                if (_binaryFace)
+                {
+                    OscAnimatorLayerBuilder.AddBinaryDecodeLayer(
+                        gestureController,
+                        OscParameterSpec.All.Where(s => s.Kind == OscParamKind.HeadPose),
+                        _binaryBits);
+                }
                 OscAnimatorLayerBuilder.AddCombinedHeadLayer(gestureController);
             }
 
             if (gestureController != null)
             {
+                // Decode-layer residue on Gesture: binary off, or head pose
+                // deselected (its only Gesture-side consumer).
+                if (!_binaryFace || !_includeHeadPose)
+                {
+                    OscAnimatorLayerBuilder.RemoveLayer(
+                        gestureController, OscAnimatorLayerBuilder.BinaryDecodeKey);
+                }
                 // Hand layers (issue #8): the selected mode's per-hand
                 // layers go in, the other mode's come out — gesture poses
                 // and per-finger curls write the same Fingers muscle groups
@@ -589,6 +649,11 @@ namespace VRChatCameraOsc.AvatarSetup
                       "untracked the layer parks in an empty Idle state, so the avatar's own idle arm " +
                       "animation keeps playing."
                     : "") +
+                (_binaryFace
+                    ? $"\n\nFace parameters are declared as VRCFT-style binary bit Bools ({_binaryBits}-bit" +
+                      " per param, + a Negative sign Bool per head axis); an OSC_BinaryDecode layer" +
+                      " reconstructs the float values inside the animator."
+                    : "") +
                 (_includeHeadPose && !gestureCopiedDefaultHands
                     ? "\n\nCouldn't find the VRC SDK's default hand-gesture controller " +
                       $"(\"{DefaultHandsControllerAssetName}\", normally imported via the SDK's " +
@@ -623,7 +688,10 @@ namespace VRChatCameraOsc.AvatarSetup
             var removedParams = 0;
             if (_avatar.expressionParameters != null)
             {
-                removedParams = VrcExpressionParametersMerger.Remove(_avatar.expressionParameters, OscParameterSpec.All);
+                // All possible names — float declarations AND the binary bit
+                // Bool groups (issue #29), whichever mode was applied.
+                removedParams = VrcExpressionParametersMerger.RemoveByName(
+                    _avatar.expressionParameters, OscParameterSpec.AllPossibleNames());
             }
             removedParams += RemoveLegacyCustom10(_avatar);
 
@@ -671,6 +739,7 @@ namespace VRChatCameraOsc.AvatarSetup
                     OscAnimatorLayerBuilder.FingerCurlRightKey,
                     OscAnimatorLayerBuilder.ArmLeftParam,
                     OscAnimatorLayerBuilder.ArmRightParam,
+                    OscAnimatorLayerBuilder.BinaryDecodeKey,
                 };
                 foreach (var key in handAndArmKeys)
                 {
@@ -684,6 +753,10 @@ namespace VRChatCameraOsc.AvatarSetup
             }
             if (controller != null)
             {
+                if (OscAnimatorLayerBuilder.RemoveLayer(controller, OscAnimatorLayerBuilder.BinaryDecodeKey))
+                {
+                    removedLayers++;
+                }
                 foreach (var spec in OscParameterSpec.All)
                 {
                     if (OscAnimatorLayerBuilder.RemoveLayer(controller, spec.Name))

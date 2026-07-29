@@ -248,6 +248,138 @@ namespace VRChatCameraOsc.AvatarSetup
             return total;
         }
 
+        // ------------------------------------------------------------------
+        // VRCFT-style binary encoding of the face floats (issue #29)
+        // ------------------------------------------------------------------
+
+        /// <summary>Default binary resolution: 4 bits = 16 steps per float.
+        /// The VRCFT community's usual space/quality trade-off; the wizard
+        /// exposes it as a setting (issue #29).</summary>
+        public const int DefaultBinaryBits = 4;
+
+        /// <summary>Maximum wizard-supported binary resolution — bit-name
+        /// suffixes go up to 2^(MaxBinaryBits-1) = 128, and cleanup scans
+        /// exactly this range (<see cref="AllPossibleBinaryNames"/>).</summary>
+        public const int MaxBinaryBits = 8;
+
+        /// <summary>The kinds the binary toggle applies to: the face floats
+        /// (blend shapes, eyelids, head pose). Gesture ints, curls, and arm
+        /// params keep their normal declarations (issue #29 scope).</summary>
+        public static bool IsFace(OscParamKind kind)
+        {
+            return kind == OscParamKind.BlendShape
+                || kind == OscParamKind.EyeLid
+                || kind == OscParamKind.HeadPose;
+        }
+
+        /// <summary>Whether a spec's value can go negative (the -1..1 head
+        /// axes) — binary encoding then adds a <c>&lt;Name&gt;Negative</c>
+        /// sign Bool (VRCFT <c>BinaryBaseParameter</c> convention).</summary>
+        public static bool IsSigned(OscParamSpec spec)
+        {
+            return spec.Min < 0f;
+        }
+
+        /// <summary>The VRCFT binary declaration of one face float at the
+        /// given resolution: <c>&lt;Name&gt;1</c>, <c>&lt;Name&gt;2</c>,
+        /// <c>&lt;Name&gt;4</c>, ... (one Bool per bit, suffix = the bit's
+        /// power of two, LSB first), plus <c>&lt;Name&gt;Negative</c> for
+        /// signed params. Matches what the tracker's avatar-aware gating
+        /// recognizes (src/mapping/avatar.rs, a BinaryBaseParameter port).</summary>
+        public static System.Collections.Generic.IEnumerable<string> BinaryNames(OscParamSpec spec, int binaryBits)
+        {
+            for (var k = 0; k < binaryBits; k++)
+            {
+                yield return spec.Name + (1 << k);
+            }
+            if (IsSigned(spec))
+            {
+                yield return spec.Name + "Negative";
+            }
+        }
+
+        /// <summary>The exact expression-parameter names a declaration set
+        /// produces: binary Bool groups for the face floats when
+        /// <paramref name="binaryFace"/> is on, the spec's own name
+        /// otherwise.</summary>
+        public static System.Collections.Generic.IEnumerable<string> DeclarationNames(
+            System.Collections.Generic.IEnumerable<OscParamSpec> specs, bool binaryFace, int binaryBits)
+        {
+            foreach (var s in specs)
+            {
+                if (binaryFace && IsFace(s.Kind))
+                {
+                    foreach (var n in BinaryNames(s, binaryBits))
+                    {
+                        yield return n;
+                    }
+                }
+                else
+                {
+                    yield return s.Name;
+                }
+            }
+        }
+
+        /// <summary>Every binary bit/sign name this wizard could ever have
+        /// declared for the face floats (all resolutions up to
+        /// <see cref="MaxBinaryBits"/>) — the cleanup sweep for switching
+        /// float ⇄ binary or changing the resolution.</summary>
+        public static System.Collections.Generic.IEnumerable<string> AllPossibleBinaryNames()
+        {
+            foreach (var s in All)
+            {
+                if (!IsFace(s.Kind))
+                {
+                    continue;
+                }
+                foreach (var n in BinaryNames(s, MaxBinaryBits))
+                {
+                    yield return n;
+                }
+            }
+        }
+
+        /// <summary>Every expression-parameter name this wizard could ever
+        /// have declared, in any mode: the spec names plus the face floats'
+        /// binary expansions.</summary>
+        public static System.Collections.Generic.IEnumerable<string> AllPossibleNames()
+        {
+            foreach (var s in All)
+            {
+                yield return s.Name;
+            }
+            foreach (var n in AllPossibleBinaryNames())
+            {
+                yield return n;
+            }
+        }
+
+        /// <summary>Bit cost of one declaration under the binary-face
+        /// setting: a binarized face float costs its bit count (+1 for the
+        /// signed head axes' Negative Bool) instead of a Float's 8.</summary>
+        public static int BitCost(OscParamSpec spec, bool binaryFace, int binaryBits)
+        {
+            if (binaryFace && IsFace(spec.Kind))
+            {
+                return binaryBits + (IsSigned(spec) ? 1 : 0);
+            }
+            return BitCost(spec);
+        }
+
+        /// <summary>Total synced bits of a declaration set under the
+        /// binary-face setting.</summary>
+        public static int BitCost(
+            System.Collections.Generic.IEnumerable<OscParamSpec> specs, bool binaryFace, int binaryBits)
+        {
+            var total = 0;
+            foreach (var s in specs)
+            {
+                total += BitCost(s, binaryFace, binaryBits);
+            }
+            return total;
+        }
+
         /// <summary>The always-declared subset: not Optional (issue #24
         /// wired-only extras) and not mode-gated (hand/arm declarations
         /// follow the wizard's selected mode/toggles).</summary>

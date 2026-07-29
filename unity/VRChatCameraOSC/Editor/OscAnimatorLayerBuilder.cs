@@ -980,6 +980,206 @@ namespace VRChatCameraOsc.AvatarSetup
             return mask;
         }
 
+        /// <summary>Pseudo-parameter key of the per-controller binary decode
+        /// layer (issue #29), mirroring <see cref="CombinedHeadKey"/>: it
+        /// derives the layer/asset name (<c>OSC_BinaryDecode</c>); the real
+        /// Animator parameters are the face floats it reconstructs plus
+        /// their bit params and <see cref="ConstantOneParam"/>.</summary>
+        public const string BinaryDecodeKey = "BinaryDecode";
+
+        /// <summary>Float animator parameter pinned at its default of 1 —
+        /// the Direct Blend Tree weight for children that must always be
+        /// fully on (the signed params' sign-select subtrees). Never synced,
+        /// never written; the standard DBT constant-weight trick.</summary>
+        public const string ConstantOneParam = "VCO_One";
+
+        /// <summary>
+        /// ONE layer per controller decoding the VRCFT binary Bool groups
+        /// back into the float Animator parameters the existing driving
+        /// layers read (issue #29) — those layers stay untouched, so the
+        /// eyelid 0.75-neutral tree and the combined 27-leaf head tree keep
+        /// their exact behavior; only the parameter's source changes
+        /// (synced Float → decoded AAP).
+        ///
+        /// Construction (the VRCFT-community standard, verified against
+        /// rrazgriz/VRCFTGenerator's decode layer and docs.vrcft.io):
+        ///
+        /// - VRChat casts a synced Bool expression parameter onto a
+        ///   same-named <b>Float</b> animator parameter as 0.0/1.0
+        ///   (creators.vrchat.com/avatars/animator-parameters, "Mismatched
+        ///   parameter types": bool → float, true is 1.0) — so every bit
+        ///   param is declared here as a Float.
+        /// - The single state's motion is a Direct Blend Tree with one child
+        ///   per bit: a clip writing the base parameter (an Animated
+        ///   Animator Parameter) to that bit's contribution
+        ///   <c>2^k/(2^N−1)</c>, weighted by the bit's 0/1 Float. Direct
+        ///   children compose additively (unnormalized), so the children sum
+        ///   to the decoded value — all bits set decodes to exactly 1.0,
+        ///   matching the encoder's ≥0.99999 → all-ones saturation
+        ///   (VRCFT BinaryBaseParameter, ported in src/mapping/avatar.rs).
+        /// - Signed params (the -1..1 head axes) add a sign-select Simple1D
+        ///   tree on <c>&lt;Name&gt;Negative</c> (0 → the positive bit tree,
+        ///   1 → a mirrored tree whose clips write −2^k/(2^N−1)), under a
+        ///   <see cref="ConstantOneParam"/> direct weight.
+        /// - The state has write defaults ON — the known Direct-Blend-Tree /
+        ///   AAP requirement (unlike every other wizard layer, which is WD
+        ///   off by the issue #25/#28 lessons; this layer animates only
+        ///   animator parameters, so WD on cannot leak into the pose).
+        ///
+        /// Call BEFORE the driving layers are (re)added so this layer sits
+        /// above them: parameter writes propagate to later-evaluated layers.
+        /// </summary>
+        public static void AddBinaryDecodeLayer(
+            AnimatorController controller, IEnumerable<OscParamSpec> faceSpecs, int binaryBits)
+        {
+            // Full sub-asset cleanup before rebuilding (idempotent re-Apply;
+            // also drops stale bit params when the resolution changes).
+            RemoveLayer(controller, BinaryDecodeKey);
+
+            var specs = faceSpecs.ToList();
+            if (specs.Count == 0)
+            {
+                return;
+            }
+
+            EnsureFloatParameter(controller, ConstantOneParam, defaultFloat: 1f);
+
+            var layerName = LayerNameFor(BinaryDecodeKey);
+            var root = new BlendTree
+            {
+                name = layerName,
+                blendType = BlendTreeType.Direct,
+                useAutomaticThresholds = false,
+            };
+            AssetDatabase.AddObjectToAsset(root, controller);
+
+            var children = new List<ChildMotion>();
+            foreach (var spec in specs)
+            {
+                // The decode target — the same Float the driving layers
+                // blend on; with binary declarations there is no synced
+                // Float of this name, so the AAP owns it.
+                EnsureFloatParameter(controller, spec.Name);
+                foreach (var bitName in BitParamNames(spec.Name, binaryBits))
+                {
+                    EnsureFloatParameter(controller, bitName);
+                }
+
+                if (!OscParameterSpec.IsSigned(spec))
+                {
+                    children.AddRange(BitChildren(controller, layerName, spec.Name, binaryBits, sign: +1f));
+                }
+                else
+                {
+                    var negativeParam = spec.Name + "Negative";
+                    EnsureFloatParameter(controller, negativeParam);
+                    var signTree = new BlendTree
+                    {
+                        name = $"{layerName}_{spec.Name.Replace('/', '_')}_sign",
+                        blendType = BlendTreeType.Simple1D,
+                        blendParameter = negativeParam,
+                        useAutomaticThresholds = false,
+                    };
+                    AssetDatabase.AddObjectToAsset(signTree, controller);
+                    signTree.AddChild(
+                        BitTree(controller, layerName, spec.Name, binaryBits, sign: +1f), 0f);
+                    signTree.AddChild(
+                        BitTree(controller, layerName, spec.Name, binaryBits, sign: -1f), 1f);
+                    children.Add(new ChildMotion
+                    {
+                        motion = signTree,
+                        directBlendParameter = ConstantOneParam,
+                        timeScale = 1f,
+                    });
+                }
+            }
+            root.children = children.ToArray();
+
+            var stateMachine = new AnimatorStateMachine { name = layerName, hideFlags = HideFlags.HideInHierarchy };
+            AssetDatabase.AddObjectToAsset(stateMachine, controller);
+            var state = stateMachine.AddState(layerName);
+            state.motion = root;
+            // WD ON — see the doc comment; DBT/AAP layers require it.
+            state.writeDefaultValues = true;
+            stateMachine.defaultState = state;
+
+            var layers = controller.layers.ToList();
+            layers.Add(new AnimatorControllerLayer
+            {
+                name = layerName,
+                stateMachine = stateMachine,
+                defaultWeight = 1f,
+                blendingMode = AnimatorLayerBlendingMode.Override,
+                avatarMask = null, // animates only animator parameters
+            });
+            controller.layers = layers.ToArray();
+        }
+
+        /// <summary>The bit Float parameter names of one binarized face
+        /// float, LSB first: <c>&lt;name&gt;1</c>, <c>&lt;name&gt;2</c>,
+        /// <c>&lt;name&gt;4</c>, ...</summary>
+        static IEnumerable<string> BitParamNames(string paramName, int binaryBits)
+        {
+            for (var k = 0; k < binaryBits; k++)
+            {
+                yield return paramName + (1 << k);
+            }
+        }
+
+        /// <summary>Direct-tree children decoding one param's bits with the
+        /// given sign: bit k's clip writes the AAP to
+        /// <c>sign · 2^k/(2^N−1)</c>, weighted by that bit's 0/1 Float.</summary>
+        static IEnumerable<ChildMotion> BitChildren(
+            AnimatorController controller, string layerName, string paramName, int binaryBits, float sign)
+        {
+            var steps = (1 << binaryBits) - 1;
+            for (var k = 0; k < binaryBits; k++)
+            {
+                var contribution = sign * (1 << k) / (float)steps;
+                yield return new ChildMotion
+                {
+                    motion = AapClip(controller, layerName, paramName, 1 << k, contribution),
+                    directBlendParameter = paramName + (1 << k),
+                    timeScale = 1f,
+                };
+            }
+        }
+
+        /// <summary>One sign's bit-summing Direct tree (the sign-select
+        /// Simple1D's children for the -1..1 head axes).</summary>
+        static BlendTree BitTree(
+            AnimatorController controller, string layerName, string paramName, int binaryBits, float sign)
+        {
+            var tree = new BlendTree
+            {
+                name = $"{layerName}_{paramName.Replace('/', '_')}_{(sign < 0f ? "neg" : "pos")}",
+                blendType = BlendTreeType.Direct,
+                useAutomaticThresholds = false,
+            };
+            AssetDatabase.AddObjectToAsset(tree, controller);
+            tree.children = BitChildren(controller, layerName, paramName, binaryBits, sign).ToArray();
+            return tree;
+        }
+
+        /// <summary>A clip writing one Animator Float parameter (an AAP) to
+        /// a constant value — flat 1-second curve like every other wizard
+        /// clip (<see cref="MuscleClipSeconds"/>).</summary>
+        static AnimationClip AapClip(
+            AnimatorController controller, string layerName, string paramName, int bitSuffix, float value)
+        {
+            var clip = new AnimationClip
+            {
+                name = $"{layerName}_{paramName.Replace('/', '_')}_b{bitSuffix}{(value < 0f ? "_neg" : "")}",
+            };
+            var binding = EditorCurveBinding.FloatCurve(string.Empty, typeof(Animator), paramName);
+            var curve = new AnimationCurve(
+                new Keyframe(0f, value),
+                new Keyframe(MuscleClipSeconds, value));
+            AnimationUtility.SetEditorCurve(clip, binding, curve);
+            AssetDatabase.AddObjectToAsset(clip, controller);
+            return clip;
+        }
+
         /// <summary>Whether an <c>OSC_&lt;paramName&gt;</c> layer currently exists — the
         /// "ON" state the wizard's toggle button reads to decide Apply vs. Remove.</summary>
         public static bool HasLayer(AnimatorController controller, string paramName)
@@ -1072,12 +1272,15 @@ namespace VRChatCameraOsc.AvatarSetup
                 Object.DestroyImmediate(layer.avatarMask, true);
             }
 
-            // The combined head layer, the per-hand finger-curl layers, and
-            // the per-arm layers are keyed by pseudo-params; their real
-            // Animator parameters are the three head axes / that hand's
-            // five curl floats / that arm's Bool gate + three floats
+            // The combined head layer, the per-hand finger-curl layers, the
+            // per-arm layers, and the binary decode layer are keyed by
+            // pseudo-params; their real Animator parameters are the three
+            // head axes / that hand's five curl floats / that arm's Bool
+            // gate + three floats / the bit params + constant-1
             // (ArmLeftParam doubles as the UpDown parameter name, so the
-            // arm mapping is a superset of the bare-name fallback).
+            // arm mapping is a superset of the bare-name fallback). The
+            // decode layer's mapping deliberately excludes the base float
+            // names — the driving layers own those.
             var toDrop = paramName == CombinedHeadKey
                 ? HeadAxes.Select(a => a.param).ToArray()
                 : paramName == FingerCurlLeftKey
@@ -1088,7 +1291,11 @@ namespace VRChatCameraOsc.AvatarSetup
                             ? ArmParams(leftArm: true)
                             : paramName == ArmRightParam
                                 ? ArmParams(leftArm: false)
-                                : new[] { paramName };
+                                : paramName == BinaryDecodeKey
+                                    ? new[] { ConstantOneParam }
+                                        .Concat(OscParameterSpec.AllPossibleBinaryNames())
+                                        .ToArray()
+                                    : new[] { paramName };
             controller.parameters = controller.parameters.Where(p => !toDrop.Contains(p.name)).ToArray();
             return true;
         }
@@ -1136,13 +1343,18 @@ namespace VRChatCameraOsc.AvatarSetup
             return tree;
         }
 
-        static void EnsureFloatParameter(AnimatorController controller, string paramName)
+        static void EnsureFloatParameter(AnimatorController controller, string paramName, float defaultFloat = 0f)
         {
             if (controller.parameters.Any(p => p.name == paramName))
             {
                 return;
             }
-            controller.AddParameter(paramName, AnimatorControllerParameterType.Float);
+            controller.AddParameter(new AnimatorControllerParameter
+            {
+                name = paramName,
+                type = AnimatorControllerParameterType.Float,
+                defaultFloat = defaultFloat,
+            });
         }
 
         /// <summary>
