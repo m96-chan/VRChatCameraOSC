@@ -687,17 +687,24 @@ namespace VRChatCameraOsc.AvatarSetup
         ///   group lesson): wrist/twists ride at 0 rather than being left
         ///   unwritten.
         /// </summary>
+        /// <summary>Revised after the first live round (issue #28): the
+        /// original table kept the forearm near-straight throughout
+        /// ("肘がきいていない"), reading as a stiff robot arm. The raise now
+        /// travels through a strongly bent elbow at mid height (a natural
+        /// wave: the bend does the lifting, hand near the face) and
+        /// straightens back out overhead. Values remain provisional live
+        /// tuning material.</summary>
         static readonly (string muscle, float hanging, float mid, float up)[] ArmPoseTable =
         {
             //  muscle                 -1 hang   0 mid   +1 up
-            ("Shoulder Down-Up",       -0.1f,    0f,     0.4f),
-            ("Shoulder Front-Back",     0f,     -0.3f,   0f),
-            ("Arm Down-Up",            -0.5f,    0.3f,   1f),
-            ("Arm Front-Back",          0f,     -0.7f,   0f),
+            ("Shoulder Down-Up",       -0.1f,    0.1f,   0.5f),
+            ("Shoulder Front-Back",     0f,     -0.2f,   0f),
+            ("Arm Down-Up",            -0.5f,    0.1f,   0.95f),
+            ("Arm Front-Back",          0f,     -0.5f,   0f),
             ("Arm Twist In-Out",        0f,      0f,     0f),
-            ("Forearm Stretch",         0.7f,    0.9f,   1f),
+            ("Forearm Stretch",         0.85f,  -0.45f,  0.7f),
             ("Forearm Twist In-Out",    0f,      0f,     0f),
-            ("Hand Down-Up",            0f,      0f,     0f),
+            ("Hand Down-Up",            0f,      0.1f,   0f),
             ("Hand In-Out",             0f,      0f,     0f),
         };
 
@@ -755,10 +762,19 @@ namespace VRChatCameraOsc.AvatarSetup
             var stateMachine = new AnimatorStateMachine { name = layerName, hideFlags = HideFlags.HideInHierarchy };
             AssetDatabase.AddObjectToAsset(stateMachine, controller);
 
-            var neutral = stateMachine.AddState("Neutral");
-            neutral.motion = null;
-            neutral.writeDefaultValues = false;
-            stateMachine.defaultState = neutral;
+            // Three states (issue #28 live feedback: with an
+            // empty-state-only release, write-defaults-off residue left the
+            // arm frozen wherever it was when the hand left the frame —
+            // "デフォルトの位置に戻らない"). The release path now travels
+            // through an explicit Rest pose, THEN hands over to the empty
+            // Idle state: the arm visibly returns to a defined hanging pose
+            // within ~0.3 s, and once Idle takes over any WD-off residue IS
+            // the rest pose, so idle/locomotion animation resumes from a
+            // sane baseline either way.
+            var idle = stateMachine.AddState("Idle");
+            idle.motion = null;
+            idle.writeDefaultValues = false;
+            stateMachine.defaultState = idle;
 
             var tree = new BlendTree
             {
@@ -770,25 +786,39 @@ namespace VRChatCameraOsc.AvatarSetup
             AssetDatabase.AddObjectToAsset(tree, controller);
             foreach (var anchor in new[] { -1f, 0f, 1f })
             {
-                tree.AddChild(ArmPoseClip(controller, layerName, leftArm, anchor), anchor);
+                tree.AddChild(ArmPoseClip(controller, layerName, leftArm, anchor, null), anchor);
             }
 
             var active = stateMachine.AddState("Active");
             active.motion = tree;
             active.writeDefaultValues = false;
 
-            // Raise: leave Neutral as soon as the parameter escapes the
-            // deadband in either direction (a condition can't express OR, so
-            // two transitions).
-            ConfigureArmTransition(neutral.AddTransition(active))
-                .AddCondition(AnimatorConditionMode.Greater, ArmDeadband, paramName);
-            ConfigureArmTransition(neutral.AddTransition(active))
-                .AddCondition(AnimatorConditionMode.Less, -ArmDeadband, paramName);
-            // Lower: back to Neutral only when INSIDE the deadband — both
+            var rest = stateMachine.AddState("Rest");
+            rest.motion = ArmPoseClip(controller, layerName, leftArm, -1f, "_Rest");
+            rest.writeDefaultValues = false;
+
+            // Raise: leave Idle (or interrupt Rest) as soon as the parameter
+            // escapes the deadband in either direction (a condition can't
+            // express OR, so two transitions each).
+            foreach (var from in new[] { idle, rest })
+            {
+                ConfigureArmTransition(from.AddTransition(active))
+                    .AddCondition(AnimatorConditionMode.Greater, ArmDeadband, paramName);
+                ConfigureArmTransition(from.AddTransition(active))
+                    .AddCondition(AnimatorConditionMode.Less, -ArmDeadband, paramName);
+            }
+            // Lower: Active -> Rest only when INSIDE the deadband — both
             // conditions on one transition AND together.
-            var release = ConfigureArmTransition(active.AddTransition(neutral));
+            var release = ConfigureArmTransition(active.AddTransition(rest));
             release.AddCondition(AnimatorConditionMode.Less, ArmDeadband, paramName);
             release.AddCondition(AnimatorConditionMode.Greater, -ArmDeadband, paramName);
+            // Settle: Rest -> Idle on exit time (the 1 s rest clip plays
+            // once, then idle animation takes back over).
+            var settle = rest.AddTransition(idle);
+            settle.hasExitTime = true;
+            settle.exitTime = 1.2f;
+            settle.hasFixedDuration = true;
+            settle.duration = ArmTransitionSeconds;
 
             var layers = controller.layers.ToList();
             var existingIndex = layers.FindIndex(l => l.name == layerName);
@@ -821,9 +851,10 @@ namespace VRChatCameraOsc.AvatarSetup
             AnimatorController controller,
             string layerName,
             bool leftArm,
-            float anchor)
+            float anchor,
+            string nameSuffix)
         {
-            var clip = new AnimationClip { name = $"{layerName}_{anchor:0.#}" };
+            var clip = new AnimationClip { name = $"{layerName}_{nameSuffix ?? anchor.ToString("0.#")}" };
             var side = leftArm ? "Left" : "Right";
             foreach (var (muscle, hanging, mid, up) in ArmPoseTable)
             {

@@ -10,7 +10,7 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
     /// Issue #28 phase 1: <c>VCO_L/R_ArmUpDown</c> floats (-1 hanging ..
     /// +1 straight up; exactly 0.0 = hand untracked) driving one arm-raise
     /// layer per arm (<see cref="OscAnimatorLayerBuilder.AddArmLayer"/>):
-    /// empty Neutral passthrough state inside the deadband, Simple1D anchor
+    /// Idle/Active/Rest machine (empty Idle passthrough, deadband, Rest settle), Simple1D anchor
     /// tree in the Active state outside it.
     /// </summary>
     public class OscArmLayerTests
@@ -52,75 +52,52 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
         }
 
         [Test]
-        public void AddArmLayer_Left_EmptyNeutralDefault_PlusActiveTreeState()
+        public void AddArmLayer_Left_EmptyIdleDefault_ActiveTree_RestPose()
         {
             OscAnimatorLayerBuilder.AddArmLayer(_controller, leftArm: true);
 
-            Assert.IsTrue(_controller.parameters.Any(p =>
-                p.name == "VCO_L_ArmUpDown" && p.type == AnimatorControllerParameterType.Float));
-
             var layer = _controller.layers.Single(l => l.name == "OSC_VCO_L_ArmUpDown");
-            Assert.AreEqual(AnimatorLayerBlendingMode.Override, layer.blendingMode);
-            Assert.AreEqual(1f, layer.defaultWeight, 1e-6f);
-
             var sm = layer.stateMachine;
             CollectionAssert.AreEquivalent(
-                new[] { "Neutral", "Active" },
+                new[] { "Idle", "Active", "Rest" },
                 sm.states.Select(s => s.state.name).ToArray());
-
-            // At 0.0 (hand untracked — the tracker's contract) the layer
-            // must write nothing so idle/locomotion arm animation plays.
-            Assert.AreEqual("Neutral", sm.defaultState.name);
+            // Idle is the empty default (idle/locomotion passthrough); Rest
+            // is an explicit hanging pose so the arm visibly returns when
+            // the hand leaves the frame (issue #28 live feedback) before
+            // handing back to Idle.
+            Assert.AreEqual("Idle", sm.defaultState.name);
             Assert.IsNull(sm.defaultState.motion);
-
-            var active = sm.states.Single(s => s.state.name == "Active").state;
-            var tree = (BlendTree)active.motion;
-            Assert.AreEqual("VCO_L_ArmUpDown", tree.blendParameter);
-            Assert.IsFalse(tree.useAutomaticThresholds);
-            CollectionAssert.AreEqual(
-                new[] { -1f, 0f, 1f },
-                tree.children.Select(c => c.threshold).ToArray());
+            var rest = sm.states.Single(s => s.state.name == "Rest").state;
+            Assert.IsNotNull(rest.motion, "Rest carries the hanging pose clip");
+            Assert.Greater(((AnimationClip)rest.motion).length, 0.5f);
         }
 
         [Test]
-        public void AddArmLayer_ThresholdTransitions_RaiseOnEitherSideOfDeadband_ReturnInsideIt()
+        public void AddArmLayer_TransitionGraph_DeadbandAndRestSettle()
         {
             OscAnimatorLayerBuilder.AddArmLayer(_controller, leftArm: true);
 
             var sm = _controller.layers.Single(l => l.name == "OSC_VCO_L_ArmUpDown").stateMachine;
-            var neutral = sm.states.Single(s => s.state.name == "Neutral").state;
+            var idle = sm.states.Single(s => s.state.name == "Idle").state;
             var active = sm.states.Single(s => s.state.name == "Active").state;
-            Assert.IsEmpty(sm.anyStateTransitions, "plain state transitions, no any-state");
+            var rest = sm.states.Single(s => s.state.name == "Rest").state;
 
-            // Neutral -> Active: two transitions (conditions can't OR),
-            // Greater +0.02 / Less -0.02.
-            Assert.AreEqual(2, neutral.transitions.Length);
-            foreach (var tr in neutral.transitions)
-            {
-                Assert.AreSame(active, tr.destinationState);
-                Assert.IsFalse(tr.hasExitTime);
-                Assert.IsTrue(tr.hasFixedDuration);
-                Assert.AreEqual(0.25f, tr.duration, 1e-4f);
-                Assert.AreEqual(1, tr.conditions.Length);
-                Assert.AreEqual("VCO_L_ArmUpDown", tr.conditions[0].parameter);
-            }
-            var raise = neutral.transitions.Single(t => t.conditions[0].mode == AnimatorConditionMode.Greater);
-            Assert.AreEqual(0.02f, raise.conditions[0].threshold, 1e-6f);
-            var lowerSide = neutral.transitions.Single(t => t.conditions[0].mode == AnimatorConditionMode.Less);
-            Assert.AreEqual(-0.02f, lowerSide.conditions[0].threshold, 1e-6f);
+            // Idle -> Active: two condition-OR transitions escaping the deadband.
+            Assert.AreEqual(2, idle.transitions.Length);
+            Assert.IsTrue(idle.transitions.All(tr =>
+                tr.destinationState.name == "Active" && !tr.hasExitTime && tr.conditions.Length == 1));
 
-            // Active -> Neutral: ONE transition whose two conditions AND
-            // together to "inside the deadband".
-            var back = active.transitions.Single();
-            Assert.AreSame(neutral, back.destinationState);
-            Assert.IsFalse(back.hasExitTime);
-            Assert.IsTrue(back.hasFixedDuration);
-            Assert.AreEqual(0.25f, back.duration, 1e-4f);
-            Assert.AreEqual(2, back.conditions.Length);
-            var less = back.conditions.Single(c => c.mode == AnimatorConditionMode.Less);
-            Assert.AreEqual(0.02f, less.threshold, 1e-6f);
-            var greater = back.conditions.Single(c => c.mode == AnimatorConditionMode.Greater);
-            Assert.AreEqual(-0.02f, greater.threshold, 1e-6f);
+            // Rest -> Active (re-raise, 2) + Rest -> Idle (exit-time settle, 1).
+            Assert.AreEqual(3, rest.transitions.Length);
+            Assert.AreEqual(2, rest.transitions.Count(tr => tr.destinationState.name == "Active"));
+            var settle = rest.transitions.Single(tr => tr.destinationState.name == "Idle");
+            Assert.IsTrue(settle.hasExitTime, "rest hands over to idle on exit time");
+            Assert.AreEqual(0, settle.conditions.Length);
+
+            // Active -> Rest: ONE transition whose two deadband conditions AND.
+            var release = active.transitions.Single();
+            Assert.AreEqual("Rest", release.destinationState.name);
+            Assert.AreEqual(2, release.conditions.Length);
         }
 
         static float ValueOf(AnimationClip clip, string prop) => AnimationUtility.GetEditorCurve(
@@ -149,15 +126,18 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
             // the load-bearing ones per anchor.
             var hanging = (AnimationClip)tree.children[0].motion;
             Assert.AreEqual(-0.5f, ValueOf(hanging, "Left Arm Down-Up"), 1e-6f);
-            Assert.AreEqual(0.7f, ValueOf(hanging, "Left Forearm Stretch"), 1e-6f, "slightly bent hang");
+            Assert.AreEqual(0.85f, ValueOf(hanging, "Left Forearm Stretch"), 1e-6f, "near-straight hang");
 
             var mid = (AnimationClip)tree.children[1].motion;
-            Assert.AreEqual(0.3f, ValueOf(mid, "Left Arm Down-Up"), 1e-6f);
-            Assert.AreEqual(-0.7f, ValueOf(mid, "Left Arm Front-Back"), 1e-6f, "reach forward at mid");
+            Assert.AreEqual(0.1f, ValueOf(mid, "Left Arm Down-Up"), 1e-6f);
+            Assert.AreEqual(-0.5f, ValueOf(mid, "Left Arm Front-Back"), 1e-6f, "reach forward at mid");
+            // The elbow must actually articulate through the raise (issue
+            // #28 live feedback: "肘がきいていない") — strongly bent at mid.
+            Assert.AreEqual(-0.45f, ValueOf(mid, "Left Forearm Stretch"), 1e-6f, "bent elbow at mid");
 
             var up = (AnimationClip)tree.children[2].motion;
-            Assert.AreEqual(1f, ValueOf(up, "Left Arm Down-Up"), 1e-6f);
-            Assert.AreEqual(1f, ValueOf(up, "Left Forearm Stretch"), 1e-6f, "straight arm overhead");
+            Assert.AreEqual(0.95f, ValueOf(up, "Left Arm Down-Up"), 1e-6f);
+            Assert.AreEqual(0.7f, ValueOf(up, "Left Forearm Stretch"), 1e-6f, "mostly straight overhead");
         }
 
         [Test]
@@ -222,10 +202,10 @@ namespace VRChatCameraOsc.AvatarSetup.Tests
 
             var assets = AssetDatabase.LoadAllAssetsAtPath(AssetDatabase.GetAssetPath(_controller))
                 .Where(a => a != null).ToArray();
-            Assert.AreEqual(3, assets.OfType<AnimationClip>().Count(), "3 anchor clips, no orphans");
+            Assert.AreEqual(4, assets.OfType<AnimationClip>().Count(), "3 anchor clips + 1 rest clip, no orphans");
             Assert.AreEqual(1, assets.OfType<BlendTree>().Count(), "one Simple1D tree, no orphans");
-            Assert.AreEqual(3, assets.OfType<AnimatorStateTransition>().Count(),
-                "2 raise + 1 release transitions, no orphans");
+            Assert.AreEqual(6, assets.OfType<AnimatorStateTransition>().Count(),
+                "2+2 raise + 1 release + 1 settle transitions, no orphans");
             Assert.AreEqual(1, assets.OfType<AvatarMask>().Count(m => m.name == "OSC_LeftArmMask"));
         }
 
