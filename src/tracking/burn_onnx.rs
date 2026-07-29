@@ -7,7 +7,8 @@
 //! Supported op subset (exactly what the MediaPipe-family graphs use):
 //! `Conv` (grouped + asymmetric pad), `PRelu`, `MaxPool`, `Add`, `Pad`
 //! (incl. channel-pad), `Sigmoid`, `Reshape`, and — for the hand landmark
-//! net — `Transpose`, `Clip`, `GlobalAveragePool`, `Gemm`, `Squeeze`.
+//! net — `Transpose`, `Clip`, `GlobalAveragePool`, `Gemm`, `Squeeze`; for
+//! the pose estimation net (issue #28) — `Resize` (linear, half_pixel).
 //! Every activation is carried as a rank-4 tensor (`[n,c,h,w]`-shaped, with
 //! trailing 1s once the graph goes "flat"); `Gemm` reshapes internally.
 //!
@@ -27,7 +28,7 @@ use burn::tensor::activation::{relu, sigmoid};
 use burn::tensor::backend::Backend;
 use burn::tensor::module::{conv2d, max_pool2d};
 use burn::tensor::ops::ConvOptions;
-use burn::tensor::{Tensor, TensorData};
+use burn::tensor::{Int, Tensor, TensorData};
 
 type B = Wgpu;
 type Dev = <B as Backend>::Device;
@@ -82,6 +83,14 @@ enum Op {
     /// Identity in the rank-4 world (trailing 1-dims carry the "squeezed"
     /// shape; output extraction reads flattened lengths).
     Squeeze,
+    /// Bilinear upsample, ONNX `linear` + `half_pixel` (the pose net's
+    /// decoder). burn's built-in `InterpolateMode::Bilinear` is
+    /// align-corners, so this is gather-based instead: per output row/col
+    /// two source indices + a lerp weight, exactly PyTorch
+    /// `align_corners=false` (= candle's `upsample_bilinear2d(false)`).
+    Resize {
+        out_hw: [usize; 2],
+    },
 }
 
 struct ExecNode {
@@ -114,6 +123,12 @@ fn attr_int(n: &NodeProto, name: &str, default: i64) -> i64 {
 }
 fn attr_f32(n: &NodeProto, name: &str) -> Option<f32> {
     n.attribute.iter().find(|a| a.name == name).map(|a| a.f)
+}
+fn attr_str(n: &NodeProto, name: &str) -> Option<String> {
+    n.attribute
+        .iter()
+        .find(|a| a.name == name)
+        .map(|a| String::from_utf8_lossy(&a.s).into_owned())
 }
 
 fn pad4(p: &[i64]) -> [i64; 4] {
@@ -317,6 +332,26 @@ impl BurnOnnx {
                     }
                 }
                 "Squeeze" => Op::Squeeze,
+                "Resize" => {
+                    // The tf2onnx-converted MediaPipe decoders always carry a
+                    // fixed i64 `sizes` initializer [n,c,h,w] (with `roi` and
+                    // `scales` as empty tensors); only linear + half_pixel
+                    // appears, so that's all this supports.
+                    let mode = attr_str(n, "mode").unwrap_or_else(|| "nearest".into());
+                    let coord = attr_str(n, "coordinate_transformation_mode")
+                        .unwrap_or_else(|| "half_pixel".into());
+                    if mode != "linear" || coord != "half_pixel" {
+                        bail!("unsupported Resize: mode={mode} coord={coord}");
+                    }
+                    let sizes = n
+                        .input
+                        .iter()
+                        .find_map(|i| ints.get(i).filter(|v| v.len() == 4))
+                        .ok_or_else(|| anyhow!("Resize without a 4-D sizes initializer"))?;
+                    Op::Resize {
+                        out_hw: [sizes[2] as usize, sizes[3] as usize],
+                    }
+                }
                 other => bail!("burn executor: unsupported op {other}"),
             };
             nodes.push(ExecNode {
@@ -459,6 +494,49 @@ impl BurnOnnx {
                 y2.reshape([1, *out_features, 1, 1])
             }
             Op::Squeeze => act(0),
+            Op::Resize { out_hw } => {
+                let x = act(0);
+                let d = x.dims();
+                let y = self.lerp_axis(x, 2, d[2], out_hw[0]);
+                self.lerp_axis(y, 3, d[3], out_hw[1])
+            }
         })
+    }
+
+    /// Resample one spatial axis with half-pixel bilinear weights: each
+    /// output index reads two source indices (edge-clamped) blended by the
+    /// fractional offset — two `select` gathers + a lerp, all on the GPU.
+    fn lerp_axis(
+        &self,
+        x: Tensor<B, 4>,
+        dim: usize,
+        in_len: usize,
+        out_len: usize,
+    ) -> Tensor<B, 4> {
+        if in_len == out_len {
+            return x;
+        }
+        let scale = in_len as f64 / out_len as f64;
+        let mut i0 = Vec::with_capacity(out_len);
+        let mut i1 = Vec::with_capacity(out_len);
+        let mut w0 = Vec::with_capacity(out_len);
+        let mut w1 = Vec::with_capacity(out_len);
+        for o in 0..out_len {
+            let src = ((o as f64 + 0.5) * scale - 0.5).max(0.0);
+            let base = src.floor();
+            i0.push(base as i32);
+            i1.push((base as usize + 1).min(in_len - 1) as i32);
+            w1.push((src - base) as f32);
+            w0.push((1.0 - (src - base)) as f32);
+        }
+        let idx = |v: Vec<i32>| {
+            Tensor::<B, 1, Int>::from_data(TensorData::new(v, [out_len]), &self.device)
+        };
+        let mut wshape = [1usize; 4];
+        wshape[dim] = out_len;
+        let wt = |v: Vec<f32>| -> Tensor<B, 4> {
+            Tensor::<B, 1>::from_data(TensorData::new(v, [out_len]), &self.device).reshape(wshape)
+        };
+        x.clone().select(dim, idx(i0)) * wt(w0) + x.select(dim, idx(i1)) * wt(w1)
     }
 }

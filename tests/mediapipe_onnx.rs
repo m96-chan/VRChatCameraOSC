@@ -307,3 +307,72 @@ fn hand_landmark_burn_matches_candle() {
         assert!(max_diff < 2e-3, "{name}: max abs diff {max_diff}");
     }
 }
+
+/// Same-input parity between the burn-wgpu executor and candle CPU on the
+/// pose estimation net (issue #28 phase 2: full-arm tracking needs the
+/// MediaPipe Pose landmarks at realtime rates, like hands/FaceMesh before
+/// it). The pose net is the first graph with `Resize` (5× linear
+/// half-pixel 2× upsamples in its decoder), so this pins that op too.
+#[cfg(feature = "mesh-gpu")]
+#[test]
+fn pose_estimation_burn_matches_candle() {
+    use std::collections::HashMap;
+    let path = std::path::PathBuf::from("models/pose_estimation.onnx");
+    if !path.exists() {
+        eprintln!(
+            "skip: pose estimation model not found at {} (models-v1 release)",
+            path.display()
+        );
+        return;
+    }
+
+    // Deterministic pseudo-random NHWC input in 0..1 (LCG; no rand dep).
+    let n = 256 * 256 * 3;
+    let mut seed: u32 = 0x8765_4321;
+    let mut input = Vec::with_capacity(n);
+    for _ in 0..n {
+        seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+        input.push((seed >> 8) as f32 / (1u32 << 24) as f32);
+    }
+
+    // Candle CPU reference.
+    let model = candle_onnx::read_file(&path).unwrap();
+    let device = candle_core::Device::Cpu;
+    let consts = candle_onnx::initializer_tensors(&model)
+        .unwrap()
+        .into_iter()
+        .map(|(k, v)| (k, v.to_device(&device).unwrap()))
+        .collect::<HashMap<_, _>>();
+    let input_name = model.graph.as_ref().unwrap().input[0].name.clone();
+    let x = candle_core::Tensor::from_vec(input.clone(), (1, 256, 256, 3), &device).unwrap();
+    let mut inputs = consts;
+    inputs.insert(input_name, x);
+    let reference = candle_onnx::simple_eval_with_initializers(&model, inputs).unwrap();
+
+    // Burn executor.
+    let exec = vrchat_camera_osc::tracking::burn_onnx::BurnOnnx::from_path(&path).unwrap();
+    let got = exec.run(input, [1, 256, 256, 3]).unwrap();
+
+    assert_eq!(got.len(), 5, "pose net has 5 outputs");
+    for (name, data) in &got {
+        let want = reference[name]
+            .flatten_all()
+            .unwrap()
+            .to_vec1::<f32>()
+            .unwrap();
+        assert_eq!(want.len(), data.len(), "{name} length");
+        // Scale-aware tolerance: the pose net's activations span wildly
+        // different magnitudes (landmarks in 0..256 pixels, segmentation
+        // logits at ±100), so absolute diff alone is meaningless across
+        // outputs. GPU/CPU float reduction-order divergence measures
+        // ≤6e-3 on this metric (on the segmentation head, unused by arm
+        // tracking; landmarks are at ~4e-4); a wrong op or layout
+        // produces O(1).
+        let max_rel = want
+            .iter()
+            .zip(data)
+            .map(|(a, b)| (a - b).abs() / (1.0 + a.abs()))
+            .fold(0f32, f32::max);
+        assert!(max_rel < 1e-2, "{name}: max scale-aware diff {max_rel}");
+    }
+}

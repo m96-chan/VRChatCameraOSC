@@ -25,7 +25,12 @@ fn main() -> Result<()> {
 
     smoke("palm_detection", &palm, (1, 192, 192, 3))?;
     smoke("hand_landmarks", &lms, (1, 224, 224, 3))?;
-    burn_bench(&lms)?;
+    burn_bench("hand_landmarks", &lms, 224)?;
+    // Optional third model: the pose estimation net (issue #28), 256×256.
+    if let Some(pose) = args.next() {
+        smoke("pose_estimation", &pose, (1, 256, 256, 3))?;
+        burn_bench("pose_estimation", &pose, 256)?;
+    }
     Ok(())
 }
 
@@ -56,11 +61,34 @@ fn smoke(label: &str, path: &str, dims: (usize, usize, usize, usize)) -> Result<
             .collect::<Vec<_>>()
     );
 
-    // Try NHWC first (MediaPipe convention), fall back to NCHW on shape errors.
-    for (tag, shape) in [
-        ("NHWC", vec![dims.0, dims.1, dims.2, dims.3]),
-        ("NCHW", vec![dims.0, dims.3, dims.1, dims.2]),
-    ] {
+    // Prefer the graph-declared input shape when fully static; otherwise
+    // try NHWC (MediaPipe convention) then NCHW.
+    let declared: Option<Vec<usize>> = input
+        .r#type
+        .as_ref()
+        .and_then(|t| match &t.value {
+            Some(candle_onnx::onnx::type_proto::Value::TensorType(tt)) => tt.shape.as_ref(),
+            _ => None,
+        })
+        .map(|s| {
+            s.dim
+                .iter()
+                .filter_map(|d| match &d.value {
+                    Some(candle_onnx::onnx::tensor_shape_proto::dimension::Value::DimValue(v)) => {
+                        Some(*v as usize)
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>()
+        })
+        .filter(|v| v.len() == 4);
+    let mut candidates: Vec<(&str, Vec<usize>)> = Vec::new();
+    if let Some(d) = declared {
+        candidates.push(("declared", d));
+    }
+    candidates.push(("NHWC", vec![dims.0, dims.1, dims.2, dims.3]));
+    candidates.push(("NCHW", vec![dims.0, dims.3, dims.1, dims.2]));
+    for (tag, shape) in candidates {
         let x = Tensor::zeros(shape.as_slice(), candle_core::DType::F32, &device)?;
         let mut inputs = consts.clone();
         inputs.insert(input.name.clone(), x);
@@ -92,27 +120,27 @@ fn smoke(label: &str, path: &str, dims: (usize, usize, usize, usize)) -> Result<
 }
 
 #[cfg(feature = "mesh-gpu")]
-fn burn_bench(path: &str) -> Result<()> {
+fn burn_bench(label: &str, path: &str, hw: usize) -> Result<()> {
     use vrchat_camera_osc::tracking::burn_onnx::BurnOnnx;
     let exec = BurnOnnx::from_path(path)?;
-    let n = 224 * 224 * 3;
+    let n = hw * hw * 3;
     let input: Vec<f32> = (0..n).map(|i| (i % 255) as f32 / 255.0).collect();
     // Warmup (shader compile / first upload), then timed runs.
-    let _ = exec.run(input.clone(), [1, 224, 224, 3])?;
+    let _ = exec.run(input.clone(), [1, hw, hw, 3])?;
     let t0 = Instant::now();
     const RUNS: u32 = 20;
     for _ in 0..RUNS {
-        let _ = exec.run(input.clone(), [1, 224, 224, 3])?;
+        let _ = exec.run(input.clone(), [1, hw, hw, 3])?;
     }
     eprintln!(
-        "hand_landmarks on burn-wgpu: {:.1} ms/eval (avg of {RUNS})",
+        "{label} on burn-wgpu: {:.1} ms/eval (avg of {RUNS})",
         t0.elapsed().as_secs_f64() * 1000.0 / RUNS as f64
     );
     Ok(())
 }
 
 #[cfg(not(feature = "mesh-gpu"))]
-fn burn_bench(_path: &str) -> Result<()> {
+fn burn_bench(_label: &str, _path: &str, _hw: usize) -> Result<()> {
     eprintln!("mesh-gpu feature off — burn bench skipped");
     Ok(())
 }
